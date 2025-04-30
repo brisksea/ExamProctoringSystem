@@ -1,0 +1,16 @@
+# 基础依赖
+flask
+redis
+requests
+pillow
+psutil
+
+# Selenium相关
+selenium
+webdriver-manager
+
+# Windows特定依赖
+pywin32; sys_platform == 'win32'
+
+# 其他工具
+python-dateutil

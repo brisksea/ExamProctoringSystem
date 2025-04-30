@@ -1,0 +1,35 @@
+{
+    "allowed_apps": [
+        {"exe": "chrome.exe", "name": "谷歌浏览器"},
+        {"exe": "msedge.exe", "name": "Edge浏览器"},
+        {"exe1": "notepad.exe", "name": "记事本"},
+        {"exe": "calc.exe", "name": "计算器"},
+        {"exe": "devcpp.exe", "name": "Dev-C++"},
+        {"exe": "cursor.exe", "name": "Cursor"}
+    ],
+    "allowed_executables": [
+        {"path": "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe", "name": "谷歌浏览器"},
+        {"path": "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe", "name": "Edge浏览器"}
+    ],
+
+    "allowed_urls": [
+        "https://exam_.cn"
+    ],
+    "allowed_url_patterns": [
+        "^https://exam\\.cn/.*$"
+    ],
+    "default_url": "https://pintia.cn",
+    "exam_time_limit": 120,
+    "chrome_settings": {
+        "disable_extensions": true,
+        "disable_dev_tools": true,
+        "disable_downloads": false,
+        "disable_printing": false,
+        "disable_new_tabs": false
+    },
+    "only_monitor_foreground": true,
+    "server_url": "http://10.188.2.252:5000",
+    "enable_server_reporting": true,
+    "screenshot_on_violation": true,
+    "end_violation_foreground_process": false
+}
