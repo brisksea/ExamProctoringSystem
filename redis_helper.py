@@ -1,8 +1,8 @@
-import redis
 import json
 from datetime import datetime
-import time, os
+import os
 from redis.connection import ConnectionPool
+import redis
 
 DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "server_data")
 

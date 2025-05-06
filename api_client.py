@@ -13,14 +13,14 @@ class ApiClient:
     API客户端类，负责处理与服务器的所有通信
     """
 
-    def __init__(self, server_url: str = None):
+    def __init__(self, server_url):
         """
         初始化API客户端
 
         Args:
             server_url: 服务器URL，如果为None则需要在调用方法时提供
         """
-        self.server_url = server_url
+        self.server_url = f'http://{server_url}:5000'
         self.headers = {
             'Content-Type': 'application/json'
         }
@@ -33,9 +33,9 @@ class ApiClient:
         Args:
             server_url: 服务器URL
         """
-        self.server_url = server_url
+        self.server_url =  f'http://{server_url}:5000'
 
-    def login(self, username: str, server_url: str = None) -> Tuple[Optional[bool], Dict[str, Any], str]:
+    def login(self, username: str) -> Tuple[Optional[bool], Dict[str, Any], str]:
         """
         用户初始登录 - 用于用户首次登录系统，只需提供用户名
 
@@ -49,16 +49,6 @@ class ApiClient:
                 - 响应数据（如果成功或需要选择）或空字典
                 - 错误消息（如果失败）或"choice_required"或空字符串
         """
-        url = server_url
-        if not url:
-            return False, {}, "未指定服务器URL"
-
-        # 验证服务器URL格式
-        if not (url.startswith("http://") or url.startswith("https://")):
-            url = "http://" + url
-
-        # 设置实例的服务器URL
-        self.server_url = url
 
         # 准备登录数据
         login_data = {
@@ -68,7 +58,7 @@ class ApiClient:
         try:
             # 发送登录请求
             response = requests.post(
-                f"{url}/api/login",
+                f"{self.server_url}/api/login",
                 json=login_data,
                 headers=self.headers,
                 timeout=self.timeout
@@ -332,3 +322,69 @@ class ApiClient:
                 return False, f"截图上传失败: {response.status_code} {error_detail}"
         except Exception as e:
             return False, f"截图上传错误: {str(e)}"
+        
+    def get_server_time(self) -> Tuple[bool, Optional[str], str]:
+        """
+        获取服务器时间
+
+        Returns:
+            Tuple[bool, Optional[str], str]:
+                - 是否成功
+                - 服务器时间字符串（如成功）或None
+                - 错误消息（如失败）或空字符串
+        """
+        if not self.server_url:
+            return False, None, "未指定服务器URL"
+        try:
+            print(f"{self.server_url}/api/server_time")
+            response = requests.get(
+                f"{self.server_url}/api/server_time",
+                timeout=self.timeout
+            )
+            if response.status_code == 200:
+                data = response.json()
+                if "server_time" in data:
+                    return True, data["server_time"], ""
+                else:
+                    return False, None, "服务器返回的数据格式不正确"
+            else:
+                try:
+                    error_detail = response.json().get("message", "")
+                except Exception:
+                    error_detail = response.text
+                return False, None, f"服务器返回错误: {response.status_code} {error_detail}"
+        except Exception as e:
+            return False, None, f"获取服务器时间时出错: {str(e)}"
+        
+        
+    def fetch_config(self):
+        """
+        从服务器获取配置
+
+        Args:
+            server_url: 服务器URL
+
+        Returns:
+            dict: 配置字典，如果获取失败则返回None
+        """
+        try:
+            # 发送请求获取配置
+            response = requests.get(
+                f"{self.server_url}/api/config",
+                timeout=5
+            )
+
+            if response.status_code == 200:
+                data = response.json()
+                if data.get("status") == "success" and "config" in data:
+                    # 确保所有必要的配置项都存在
+                    config = data["config"]
+                    for key, value in self.default_config.items():
+                        if key not in config:
+                            config[key] = value
+                    return config
+
+            return None
+        except Exception as e:
+            print(f"从服务器获取配置时出错: {str(e)}")
+            return None

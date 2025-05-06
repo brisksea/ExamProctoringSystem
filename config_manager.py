@@ -14,7 +14,7 @@ class ConfigManager:
     配置管理器类，负责管理考试监控客户端的配置
     """
 
-    def __init__(self, config_file=None, server_url=None):
+    def __init__(self, config_file=None, api_client=None):
         """
         初始化配置管理器
 
@@ -29,7 +29,7 @@ class ConfigManager:
             self.config_file = config_file
 
         # 服务器URL
-        self.server_url = server_url
+        self.api_client = api_client
 
         # 配置来源标志
         self.config_from_server = False
@@ -125,8 +125,8 @@ class ConfigManager:
         self.config = self.load_config()
 
         # 如果提供了服务器URL，尝试从服务器获取配置
-        if self.server_url:
-            server_config = self.fetch_config_from_server(self.server_url)
+        if self.api_client:
+            server_config = self.api_client.fetch_config()
             if server_config:
                 self.config = server_config
                 self.config_from_server = True
@@ -134,37 +134,6 @@ class ConfigManager:
             else:
                 print(f"无法从服务器获取配置，使用本地配置")
 
-    def fetch_config_from_server(self, server_url):
-        """
-        从服务器获取配置
-
-        Args:
-            server_url: 服务器URL
-
-        Returns:
-            dict: 配置字典，如果获取失败则返回None
-        """
-        try:
-            # 发送请求获取配置
-            response = requests.get(
-                f"{server_url}/api/config",
-                timeout=5
-            )
-
-            if response.status_code == 200:
-                data = response.json()
-                if data.get("status") == "success" and "config" in data:
-                    # 确保所有必要的配置项都存在
-                    config = data["config"]
-                    for key, value in self.default_config.items():
-                        if key not in config:
-                            config[key] = value
-                    return config
-
-            return None
-        except Exception as e:
-            print(f"从服务器获取配置时出错: {str(e)}")
-            return None
 
     def load_config(self):
         """

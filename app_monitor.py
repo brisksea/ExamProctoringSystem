@@ -43,12 +43,11 @@ class AppMonitor:
 
     def islater(self, filepath):
         ctime = os.path.getctime(filepath)
-        ctime_str = datetime.fromtimestamp(ctime).strftime("%Y-%m-%d %H:%M:%S")
-        print(f"当前打开文件: {filepath}，创建日期: {ctime_str}") 
+        mtime = os.path.getmtime(filepath)
+        mtime_str = datetime.fromtimestamp(mtime).strftime("%Y-%m-%d %H:%M:%S")
+        print(f"当前打开文件: {filepath}，修改日期: {mtime_str}")
         exam_start_time_dt = datetime.fromisoformat(self.exam_client.exam_start_time)
-        if ctime > exam_start_time_dt.timestamp():
-            warn_msg = f"当前打开文件: {filepath} 的创建日期({ctime_str})早于考试开始时间({exam_start_time_dt.strftime('%Y-%m-%d %H:%M:%S')})，请注意是否为考试前准备的代码文件"
-            return warn_msg
+        if mtime > exam_start_time_dt.timestamp(): return None
 
     def check_devcpp(self, window_title):
         # 通常Dev-C++窗口标题格式为 "xxx.cpp - Dev-C++"
@@ -102,9 +101,8 @@ class AppMonitor:
 
             # 如果是Chrome浏览器
             if process_name.lower() == "chrome.exe":
-                errmsg = self.chrome_controller.check(pid, window_title)
-                if errmsg:
-                    return errmsg
+                return self.chrome_controller.check(pid, window_title)
+
 
             # 跳过系统进程和自身
             if self._is_system_process(process_name):
@@ -119,8 +117,7 @@ class AppMonitor:
             if not self._is_allowed_process(process_name, process_exe, allowed_apps, allowed_exes):
                 # 使用窗口标题作为应用名称
                 app_name = window_title if window_title else process_name
-                print("发现未授权应用:", app_name)
-                print(process_exe)
+                print("发现未授权应用:", app_name, process_exe)
                 if self.islater(process_exe): return None
                 return f"未授权的前台应用: {app_name}，切换到允许的应用进行考试"
             
@@ -155,11 +152,11 @@ class AppMonitor:
             'smss.exe', 'winlogon.exe', 'lsass.exe', 'spoolsv.exe',
             'dwm.exe', 'taskhostw.exe', 'conhost.exe', 'dllhost.exe',
             'fontdrvhost.exe', 'wininit.exe', 'sihost.exe', 'ctfmon.exe',
-            'SearchIndexer.exe', 'ShellExperienceHost.exe', 'RuntimeBroker.exe',
-            'SgrmBroker.exe', 'WmiPrvSE.exe', 'SearchUI.exe', 'TextInputHost.exe',
+            'searchindexer.exe', 'ShellExperienceHost.exe', 'RuntimeBroker.exe',
+            'SgrmBroker.exe', 'wmiprvse.exe', 'searchui.exe', 'textInputHost.exe',
             'SearchApp.exe'
         ]
-        return process_name.lower() in system_processes
+        return process_name.lower() in [ proc.lower() for proc in system_processes ]
 
     def _is_self_process(self, process_exe):
         """

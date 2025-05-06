@@ -87,31 +87,8 @@ def import_students():
         # 获取Redis连接
         client = get_redis()
 
-        # 读取文件内容
-        content = file.read().decode('utf-8')
-        # 按行分割并去除空行
-        names = [name.strip() for name in content.splitlines() if name.strip()]
-        imported_count = 0
-
-        for name in names:
-            # 生成学生ID
-            student_id = client.incr(f'exam:{exam_id}:student_id_counter')
-            student_key = f'exam:{exam_id}:student:{student_id}'
-
-            # 检查学生是否已存在
-            if not client.exists(student_key):
-                # 创建新学生记录
-                student_data = {
-                    'id': str(student_id),
-                    'username': name,
-                    'exam_id': exam_id,
-                    'status': 'inactive',
-                    'created_at': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                }
-
-                # 存储学生数据
-                client.hmset(student_key, student_data)
-                imported_count += 1
+        # 导入学生名单
+        imported_count = import_students_to_exam(client, exam_id, file)
 
         return jsonify({
             "status": "success",
@@ -499,28 +476,7 @@ def manage_exams():
             if 'student_list' in request.files:
                 file = request.files['student_list']
                 if file:
-                    # 读取文件内容
-                    content = file.read().decode('utf-8')
-                    # 按行分割并去除空行
-                    names = [name.strip() for name in content.splitlines() if name.strip()]
-
-                    for name in names:
-                        # 生成学生ID
-                        student_id = client.incr(f'exam:{exam_id}:student_id_counter')
-                        student_key = f'exam:{exam_id}:student:{student_id}'
-
-                        # 创建新学生记录
-                        student_data = {
-                            'id': str(student_id),
-                            'username': name,
-                            'exam_id': str(exam_id),
-                            'status': 'offline',
-                            'created_at': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                        }
-
-                        # 存储学生数据
-                        client.hmset(student_key, student_data)
-                        imported_count += 1
+                    imported_count = import_students_to_exam(client, exam_id, file)
 
             message = "考试创建成功"
             if imported_count > 0:
@@ -667,6 +623,33 @@ def download_chromedriver(major_version):
     # 设置Content-Disposition，建议保存为chromedriver.exe
     print("send")
     return send_file(file_path, as_attachment=True, download_name='chromedriver.exe')
+
+@app.route('/api/server_time')
+def get_server_time():
+    """返回当前服务器时间"""
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    return jsonify({"server_time": now})
+
+def import_students_to_exam(client, exam_id, file):
+    """将学生名单文件导入到指定考试，返回导入人数"""
+    content = file.read().decode('utf-8')
+    names = [name.strip() for name in content.splitlines() if name.strip()]
+    imported_count = 0
+    for name in names:
+        student_id = client.incr(f'exam:{exam_id}:student_id_counter')
+        student_key = f'exam:{exam_id}:student:{student_id}'
+        # 检查学生是否已存在
+        if not client.exists(student_key):
+            student_data = {
+                'id': str(student_id),
+                'username': name,
+                'exam_id': str(exam_id),
+                'status': 'inactive',
+                'created_at': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            }
+            client.hmset(student_key, student_data)
+            imported_count += 1
+    return imported_count
 
 if __name__ == '__main__':
     try:
