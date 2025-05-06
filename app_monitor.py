@@ -32,24 +32,38 @@ class AppMonitor:
         self.foreground_window_title = ""
         self.exam_client = exam_client
 
+    def isnewer(self, filepath):
+        ctime = os.path.getctime(filepath)
+        ctime_str = datetime.fromtimestamp(ctime).strftime("%Y-%m-%d %H:%M:%S")
+        print(f"当前打开文件: {filepath}，创建日期: {ctime_str}") 
+        exam_start_time_dt = datetime.fromisoformat(self.exam_client.exam_start_time)
+        if ctime < exam_start_time_dt.timestamp():
+            warn_msg = f"当前打开文件: {filepath} 的创建日期({ctime_str})早于考试开始时间({exam_start_time_dt.strftime('%Y-%m-%d %H:%M:%S')})，请注意是否为考试前准备的代码文件"
+            return warn_msg
+
+    def islater(self, filepath):
+        ctime = os.path.getctime(filepath)
+        ctime_str = datetime.fromtimestamp(ctime).strftime("%Y-%m-%d %H:%M:%S")
+        print(f"当前打开文件: {filepath}，创建日期: {ctime_str}") 
+        exam_start_time_dt = datetime.fromisoformat(self.exam_client.exam_start_time)
+        if ctime > exam_start_time_dt.timestamp():
+            warn_msg = f"当前打开文件: {filepath} 的创建日期({ctime_str})早于考试开始时间({exam_start_time_dt.strftime('%Y-%m-%d %H:%M:%S')})，请注意是否为考试前准备的代码文件"
+            return warn_msg
+
     def check_devcpp(self, window_title):
         # 通常Dev-C++窗口标题格式为 "xxx.cpp - Dev-C++"
         if window_title and " - Dev-C" in window_title:
             filename = window_title.split("- Dev-C")[0].strip()
             if os.path.exists(filename):
                 try:
-                    ctime = os.path.getctime(filename)
-                    ctime_str = datetime.fromtimestamp(ctime).strftime("%Y-%m-%d %H:%M:%S")
-                    #print(f"Dev-C++ 当前打开文件: {filename}，创建日期: {ctime_str}") 
-                    exam_start_time_dt = datetime.fromisoformat(self.exam_client.exam_start_time)
-                    if ctime < exam_start_time_dt.timestamp():
-                        warn_msg = f"Dev-C++ 当前打开文件: {filename} 的创建日期({ctime_str})早于考试开始时间({exam_start_time_dt.strftime('%Y-%m-%d %H:%M:%S')})，请注意是否为考试前准备的代码文件"
-                        return warn_msg
+                    return self.isnewer(filename)
                 except Exception as e:
                     print(f"无法获取文件创建日期: {filename}, 错误: {e}")                                            
             else:
                 print(f"Dev-C++ 当前窗口文件未找到: {filename}")
-
+        
+        return None 
+    
     def check_running_apps(self):
         """检查当前运行的应用程序"""
         try:
@@ -80,6 +94,7 @@ class AppMonitor:
             print("可执行文件路径:", process_exe)
             '''
             
+            
             # 如果是devcpp.exe，则根据它的标题推断出目前打开的文件，打印这个文件的创建日期
             if process_name.lower() == "devcpp.exe":
                 return self.check_devcpp(window_title)
@@ -87,15 +102,9 @@ class AppMonitor:
 
             # 如果是Chrome浏览器
             if process_name.lower() == "chrome.exe":
-                if self.chrome_controller:
-                    # 检查是否是受控的Chrome实例
-                    if not self.chrome_controller.is_controlled(pid):
-                        return "未受控的Chrome浏览器，请切换到允许的浏览器进行考试"
-
-                    # 检查标签页和URL
-                    is_valid, error_msg = self.chrome_controller.check_tabs_and_urls()
-                    if not is_valid:
-                        return error_msg
+                errmsg = self.chrome_controller.check(pid, window_title)
+                if errmsg:
+                    return errmsg
 
             # 跳过系统进程和自身
             if self._is_system_process(process_name):
@@ -111,7 +120,11 @@ class AppMonitor:
                 # 使用窗口标题作为应用名称
                 app_name = window_title if window_title else process_name
                 print("发现未授权应用:", app_name)
+                print(process_exe)
+                if self.islater(process_exe): return None
                 return f"未授权的前台应用: {app_name}，切换到允许的应用进行考试"
+            
+
 
         except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess) as e:
             print("获取进程信息时出错:", str(e))
@@ -119,6 +132,8 @@ class AppMonitor:
             if window_title:
                 print("无法获取进程信息，但发现可能的未授权应用:", window_title)
                 return f"未授权的前台应用: {window_title}，切换到允许的应用进行考试"
+            
+        
 
         # 更新最后检查时间
         self.last_check_time = time.time()
@@ -217,35 +232,3 @@ class AppMonitor:
         self.foreground_window_title = window_title
 
         return (self.foreground_window_title, self.foreground_window_pid)
-
-    def _is_controlled_chrome(self, process_exe):
-        """
-        检查Chrome实例是否为受控实例
-
-        Args:
-            process_exe: Chrome可执行文件路径
-
-        Returns:
-            bool: 是否为受控的Chrome实例
-        """
-        try:
-            # 获取Chrome用户数据目录
-            controlled_chrome_profile = os.path.join(os.path.expanduser("~"), "exam_chrome_profile")
-
-            # 检查所有Chrome命令行参数
-            for proc in psutil.process_iter(['cmdline']):
-                try:
-                    if proc.name().lower() == 'chrome.exe':
-                        cmdline = proc.cmdline()
-                        # 检查是否使用了受控的用户数据目录
-                        if any(controlled_chrome_profile in arg for arg in cmdline if isinstance(arg, str)):
-                            # 如果找到受控的Chrome实例，检查是否是当前进程
-                            if process_exe.lower() == proc.exe().lower():
-                                return True
-                except (psutil.NoSuchProcess, psutil.AccessDenied):
-                    continue
-
-            return False
-        except Exception as e:
-            print(f"检查Chrome控制状态时出错: {str(e)}")
-            return False

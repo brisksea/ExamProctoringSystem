@@ -20,10 +20,10 @@ import win32gui
 import win32process
 
 # 导入Chrome驱动管理模块（集成了版本检测和驱动管理功能）
-from chrome_driver_manager import get_chrome_version, get_major_version, get_chromedriver_path
+from chrome_driver_manager import get_chrome_version, get_major_version, get_chromedriver_path, download_chromedriver_from_server
 
 class ChromeController:
-    def __init__(self, config_manager=None, default_url=None, disable_new_tabs=True):
+    def __init__(self, config_manager=None, default_url=None, disable_new_tabs=False):
         """
         初始化Chrome控制器
 
@@ -35,6 +35,8 @@ class ChromeController:
         self.disable_new_tabs = disable_new_tabs
         self.driver = None
         self.default_url = default_url
+        self.window_title = None
+        self.tab_title = None
         
 
         # 编译URL匹配模式
@@ -56,6 +58,8 @@ class ChromeController:
             options.add_argument('--no-sandbox')
             options.add_argument('--disable-dev-shm-usage')
             options.add_argument('--start-maximized')
+            options.add_argument('--disable-gpu')
+            options.add_argument('--disable-software-rasterizer')
 
             if self.disable_new_tabs:
                 options.add_argument('--disable-popup-blocking')
@@ -67,15 +71,10 @@ class ChromeController:
             driver_path = get_chromedriver_path(chrome_version)
 
             # 如果找到了兼容的ChromeDriver，使用它
-            if driver_path:
-                service = Service(driver_path)
-                self.driver = webdriver.Chrome(service=service, options=options)
-            else:
-                # 否则使用webdriver_manager自动下载
-                from webdriver_manager.chrome import ChromeDriverManager
-                service = Service(ChromeDriverManager().install())
-                self.driver = webdriver.Chrome(service=service, options=options)
-
+            if not driver_path:
+                driver_path = download_chromedriver_from_server(chrome_version, self.config_manager.server_url)
+            service = Service(driver_path)
+            self.driver = webdriver.Chrome(service=service, options=options)
 
             # 导航到初始URL或空白页
             initial_url = url if url else self.default_url
@@ -87,9 +86,7 @@ class ChromeController:
                 if default_url:
                     initial_url = default_url
             self.driver.get(initial_url)
-
-            # 注入限制脚本
-            self._inject_tab_restrictions()
+            
 
             #print("Chrome浏览器已启动")
 
@@ -135,145 +132,6 @@ class ChromeController:
             return False
         return self.chrome_pid == pid
 
-
-    def _inject_tab_restrictions(self):
-        """注入JavaScript脚本禁用标签页和右键菜单"""
-        try:
-            # 基本限制脚本 - 禁用右键菜单和新窗口快捷键
-            restriction_script = """
-            // 禁用右键菜单
-            document.addEventListener('contextmenu', function(e) {
-                e.preventDefault();
-                return false;
-            }, true);
-
-            // 禁用新窗口和隐私窗口快捷键
-            document.addEventListener('keydown', function(e) {
-                // Ctrl+N (新窗口)
-                if (e.ctrlKey && e.key === 'n') {
-                    e.preventDefault();
-                    return false;
-                }
-
-                // Ctrl+Shift+N (隐私窗口)
-                if (e.ctrlKey && e.shiftKey && e.key === 'n') {
-                    e.preventDefault();
-                    return false;
-                }
-
-                // Alt+F4 (关闭窗口)
-                if (e.altKey && e.key === 'F4') {
-                    e.preventDefault();
-                    return false;
-                }
-            """
-
-            # 如果配置为禁用新标签页，添加相应的限制
-            if self.disable_new_tabs:
-                restriction_script += """
-                // Ctrl+T (新标签页)
-                if (e.ctrlKey && e.key === 't') {
-                    e.preventDefault();
-                    return false;
-                }
-
-                // Ctrl+W (关闭标签页)
-                if (e.ctrlKey && e.key === 'w') {
-                    e.preventDefault();
-                    return false;
-                }
-                """
-
-            # 完成事件监听器
-            restriction_script += """
-            }, true);
-            """
-
-            # 添加MutationObserver部分
-            restriction_script += """
-            // 在每个页面载入后自动注入限制
-            function setupMutationObserver() {
-                // 创建一个新的MutationObserver
-                const observer = new MutationObserver(function() {
-            """
-
-            # 如果配置为禁用新标签页，添加隐藏新标签页按钮的代码
-            if self.disable_new_tabs:
-                restriction_script += """
-                    // 禁用标签页相关元素
-                    try {
-                        // 隐藏新标签按钮
-                        const newTabButtons = document.querySelectorAll('[title="新建标签页"], [title="New tab"]');
-                        newTabButtons.forEach(btn => {
-                            if(btn) btn.style.display = 'none';
-                        });
-
-                        // 隐藏标签栏中的加号按钮
-                        const plusButtons = document.querySelectorAll('.new-tab-button');
-                        plusButtons.forEach(btn => {
-                            if(btn) btn.style.display = 'none';
-                        });
-                    } catch(e) {
-                        console.log('禁用标签页元素时出错:', e);
-                    }
-                """
-
-            # 完成MutationObserver部分
-            restriction_script += """
-                });
-
-                // 开始观察document.body的变化
-                observer.observe(document.body, {
-                    childList: true,
-                    subtree: true
-                });
-            }
-
-            // 当DOM内容加载完成后执行设置
-            if(document.readyState === 'loading') {
-                document.addEventListener('DOMContentLoaded', setupMutationObserver);
-            } else {
-                setupMutationObserver();
-            }
-            """
-
-            # 执行脚本
-            self.driver.execute_script(restriction_script)
-
-            # 处理window.open函数
-            if self.disable_new_tabs:
-                # 如果禁用新标签页，阻止window.open
-                self.driver.execute_script("""
-                // 保存原始的window.open函数
-                if (!window._originalOpen) {
-                    window._originalOpen = window.open;
-                }
-
-                // 重写window.open，阻止打开
-                window.open = function() {
-                    console.log('阻止新窗口打开');
-                    return null;
-                };
-                """)
-            else:
-                # 如果允许新标签页，只记录但不阻止
-                self.driver.execute_script("""
-                // 保存原始的window.open函数
-                if (!window._originalOpen) {
-                    window._originalOpen = window.open;
-                }
-
-                // 重写window.open，允许打开但记录
-                window.open = function(url, name, specs) {
-                    console.log('打开新窗口/标签页:', url);
-                    // 确保我们不会重复包装window.open
-                    return window._originalOpen(url, name, specs);
-                };
-                """)
-
-            print("已注入标签页限制脚本")
-        except Exception as e:
-            print(f"注入标签页限制脚本时出错: {str(e)}")
 
     def _strip_protocol(self, url):
         if url.startswith('http://'):
@@ -337,56 +195,48 @@ class ChromeController:
         else:
             self.driver.execute_script("window.location.href = 'about:blank';")
 
-
-    def check_tabs_and_urls(self):
-        """
-        检查Chrome标签页数量和URL
-
-        Returns:
-            tuple: (是否符合要求, 错误信息)
-        """
-
+    def check(self, pid, window_title):
+        
+        if not self.is_controlled(pid):
+            return "未受控的Chrome浏览器，请切换到允许的浏览器进行考试"
+        
+        print("比较：",self.window_title, "， ", window_title)
+        
+        #如果chrome的链接没有发生变化不检查
+        if self.window_title == window_title:
+            return None
+        title = window_title.split(" - G")[0]
+        print('check')
         try:
             # 获取所有标签页句柄
+            
             handles = self.driver.window_handles
-
-            # 检查标签页数量
+            for handle in handles:
+                self.driver.switch_to.window(handle)
+                url = self.driver.current_url
+                if not self._is_url_allowed(url):
+                    error_msg = f"未授权的URL: {url}，切换到允许的URL进行考试"
+                    print(error_msg)
+                    return error_msg
+                #通过标题判断为当前标签
+                print(self.driver.title)
+                if title == self.driver.title:
+                    current_handle = handle
+            self.driver.switch_to.window(current_handle)
+            
             if self.disable_new_tabs and len(handles) > 1:
                 error_msg = f"检测到多个标签页，请关闭多余标签页"
                 print(error_msg)
                 # 处理多标签页情况
                 #self._handle_multiple_tabs_when_disabled()
-                return False, error_msg
-
-            # 检查当前标签页URL
-            try:
-                current_url = self.driver.current_url
-
-                # 跳过特殊页面
-                if (current_url == "about:blank" or
-                    current_url.startswith("chrome://") or
-                    current_url.startswith("chrome-extension://") or
-                    "data:text/html" in current_url):
-                    return True, None
-
-                # 检查URL是否允许
-                if not self._is_url_allowed(current_url):
-                    error_msg = f"未授权的URL: {current_url}，切换到允许的URL进行考试"
-                    print(error_msg)
-
-                    return False, error_msg
-
-            except Exception as e:
-                error_msg = f"检查URL时出错: {str(e)}"
-                print(error_msg)
-                return False, error_msg
-            
+                return error_msg
         except Exception as e:
             error_msg = f"获取标签页句柄时出错: {str(e)}"
             print(error_msg)
-            return False, error_msg
+            return error_msg
         
-        return True, None
+        self.window_title = window_title
+        return None
 
     def handle_multiple_tabs_when_disabled(self):
         """处理禁用新标签页时的多标签页情况"""

@@ -59,6 +59,10 @@
             background-color: #ffc107;
             color: #000;
         }
+        .status-end {
+            background-color:rgb(168, 155, 115);
+            color: #000;
+        }
         #logo {
             height: 40px;
             margin-right: 10px;
@@ -361,19 +365,56 @@
         }
 
         // 获取数据
-        function fetchData() {
-            // 获取考试列表
-            $.ajax({
-                url: '/api/exams',
-                method: 'GET',
-                success: function(exams) {
-                    renderExams(exams);
-                }
-            });
+        function fetchData(full = true) {
+            if (full) {
+                // 获取考试列表
+                $.ajax({
+                    url: '/api/exams',
+                    method: 'GET',
+                    success: function(exams) {
+                        renderExams(exams);
+                    }
+                });
+            }
 
             // 如果已选择考试，更新考试详情
             if (currentExamId) {
-                fetchExamDetails(currentExamId);
+                // 只刷新状态
+                $.ajax({
+                    url: `/api/exams/${currentExamId}/students`,
+                    method: 'GET',
+                    success: function(students) {
+                        if (full) {
+                            renderStudents(students);
+                        } else {
+                            // 检查状态是否有变化
+                            let changed = false;
+                            if (!window.lastStudentStatusMap || Object.keys(window.lastStudentStatusMap).length !== students.length) {
+                                changed = true;
+                            } else {
+                                for (let i = 0; i < students.length; i++) {
+                                    const s = students[i];
+                                    const last = window.lastStudentStatusMap[s.id];
+                                    if (!last || last.status !== s.status || last.login_time !== s.login_time || last.logout_time !== s.logout_time || last.login_count !== s.login_count) {
+                                        changed = true;
+                                        break;
+                                    }
+                                }
+                            }
+                            if (changed) {
+                                renderStudents(students);
+                            }
+                        }
+                    }
+                });
+                // 违规记录依然整体刷新
+                $.ajax({
+                    url: `/api/exams/${currentExamId}/violations`,
+                    method: 'GET',
+                    success: function(violations) {
+                        renderViolations(violations);
+                    }
+                });
             }
 
             // 更新刷新时间
@@ -393,8 +434,8 @@
                             <div class="card-body" onclick="selectExam(${exam.id})">
                                 <h5 class="card-title">${exam.name}</h5>
                                 <p class="card-text">
-                                    开始: ${exam.start_time}<br>
-                                    结束: ${exam.end_time}<br>
+                                    开始: ${exam.start_time.replace('T', ' ')}<br>
+                                    结束: ${exam.end_time.replace('T', ' ')}<br>
                                     状态: ${getStatusText(exam.status)}<br>
                                     ${exam.default_url ? `<span class='text-muted'>默认网址: <a style='color:#1976d2;' href=${exam.default_url} target="_blank">${exam.default_url}</a></span><br>` : ''}
                                     ${exam.delay_min && exam.delay_min > 0 ? `<span class='text-muted'>监控延时: <span style='color:#fbc02d;'>${exam.delay_min} 分钟</span></span><br>` : ''}
@@ -512,133 +553,110 @@
 
             if (students.length === 0) {
                 studentList.html('<li class="list-group-item text-center text-muted">暂无在线学生</li>');
+                // 更新lastStudentStatusMap为空
+                if (window.lastStudentStatusMap !== undefined) {
+                    window.lastStudentStatusMap = {};
+                }
                 return;
             }
 
-            // 新增：预先获取所有学生的登录历史条数
-            const loginHistoryCounts = {};
-            const loginHistoryHasRedGap = {};
-            const fetchLoginHistoryPromises = students.map(student => {
-                return $.ajax({
-                    url: `/api/exams/${student.exam_id}/students/${student.id}/logins`,
-                    method: 'GET',
-                }).then(records => {
-                    loginHistoryCounts[student.id] = records.length;
-                    // 检查是否有大于1分钟的logout-login间隔
-                    let hasRed = false;
-                    for (let i = 1; i < records.length; i++) {
-                        if (records[i].type === 'login' && records[i-1].type === 'logout') {
-                            const t1 = new Date(records[i-1].timestamp).getTime();
-                            const t2 = new Date(records[i].timestamp).getTime();
-                            if (t2 - t1 > 60 * 1000) {
-                                hasRed = true;
-                                break;
-                            }
-                        }
-                    }
-                    loginHistoryHasRedGap[student.id] = hasRed;
-                }).catch(() => {
-                    loginHistoryCounts[student.id] = 0;
-                    loginHistoryHasRedGap[student.id] = false;
-                });
+            // 按状态和登录时间排序：掉线的在最前，然后在线、不活跃、已登录但已退出、未登录
+            students.sort((a, b) => {
+                const getStatusPriority = (student) => {
+                    if (student.status === 'offline') return 0;   // 掉线最前
+                    if (student.status === 'online') return 1;
+                    if (student.status === 'inactive') return 2;
+                    if (student.status === 'logout') return 3;
+                    return 4;
+                };
+                const priorityA = getStatusPriority(a);
+                const priorityB = getStatusPriority(b);
+                if (priorityA !== priorityB) {
+                    return priorityA - priorityB;
+                }
+                if (a.login_time && b.login_time) {
+                    return new Date(b.login_time) - new Date(a.login_time);
+                } else if (a.login_time) {
+                    return -1;
+                } else if (b.login_time) {
+                    return 1;
+                } else {
+                    return new Date(b.created_at || 0) - new Date(a.created_at || 0);
+                }
             });
 
-            Promise.all(fetchLoginHistoryPromises).then(() => {
-                // 按状态和登录时间排序：在线的在前，然后是不活跃的，然后是已登录但已退出的，最后是未登录的
-                students.sort((a, b) => {
-                    // ...原有排序逻辑...
-                    const getStatusPriority = (student) => {
-                        if (student.status === 'online') return 0;
-                        if (student.status === 'inactive') return 1;
-                        if (student.status === 'offline' && student.login_time) return 2;
-                        return 3;
-                    };
-                    const priorityA = getStatusPriority(a);
-                    const priorityB = getStatusPriority(b);
-                    if (priorityA !== priorityB) {
-                        return priorityA - priorityB;
-                    }
-                    if (a.login_time && b.login_time) {
-                        return new Date(b.login_time) - new Date(a.login_time);
-                    } else if (a.login_time) {
-                        return -1;
-                    } else if (b.login_time) {
-                        return 1;
-                    } else {
-                        return new Date(b.created_at || 0) - new Date(a.created_at || 0);
-                    }
-                });
+            let extraStyle = '';
+            students.forEach(student => {
+                extraStyle = '';
+                let statusClass = '';
+                let statusBadge = '';
 
-                // 移动extraStyle声明到forEach外部
-                let extraStyle = '';
-                students.forEach(student => {
+                if (student.status === 'online') {
+                    statusBadge = '<span class="badge status-online badge-status">在线</span>';
+                } else if (student.status === 'inactive') {
+                    statusClass = 'student-inactive';
+                    statusBadge = '<span class="badge status-inactive badge-status">未登录</span>';
+                } else if (student.status === 'logout') {
+                    statusClass = 'student-end';
+                    statusBadge = '<span class="badge status-end badge-status">已结束考试</span>';
                     extraStyle = '';
-                    let statusClass = '';
-                    let statusBadge = '';
+                } else if (student.status === 'offline') {
+                    statusClass = 'student-offline';
+                    statusBadge = '<span class="badge status-offline badge-status">掉线</span>';
+                    extraStyle = 'background-color: #f3f3f3 !important;';
+                } else {
+                    statusClass = 'student-offline';
+                    statusBadge = '<span class="badge status-offline badge-status">' + student.status + '</span>';
+                    extraStyle = '';
+                }
 
-                    if (student.status === 'online') {
-                        statusBadge = '<span class="badge status-online badge-status">在线</span>';
-                    } else if (student.status === 'inactive') {
-                        statusClass = 'student-inactive';
-                        statusBadge = '<span class="badge status-inactive badge-status">不活跃</span>';
-                    } else if (student.status === 'offline') {
-                        if (student.login_time) {
-                            statusClass = 'student-end';
-                            statusBadge = '<span class="badge status-offline badge-status">已结束考试</span>';
-                            extraStyle = 'background-color: #f3f3f3 !important;';
-                        } else {
-                            statusClass = 'student-offline';
-                            statusBadge = '<span class="badge status-offline badge-status">未登录</span>';
-                            extraStyle = '';
-                        }
-                    } else {
-                        statusClass = 'student-offline';
-                        statusBadge = '<span class="badge status-offline badge-status">' + student.status + '</span>';
-                        extraStyle = '';
-                    }
+                // 新增：如果登录历史超过3条，添加黄色背景
+                if (student.login_count > 3) {
+                    extraStyle = 'background-color: #fff9c4 !important;'; // 浅黄色
+                }
 
-                    // 新增：如果登录历史超过3条，添加黄色背景
-                    if (loginHistoryCounts[student.id] > 3) {
-                        extraStyle = 'background-color: #fff9c4 !important;'; // 浅黄色
-                    }
-
-                    let studentInfoHtml = `
-                        <li class="list-group-item d-flex justify-content-between align-items-center student-card ${statusClass}" style="cursor:pointer;${extraStyle}" onclick="showStudentScreenshots('${student.exam_id}','${student.id}','${student.username}')">
-                            <div>
-                                <div class="fw-bold">${student.username} ${statusBadge}</div>`;
-                    if (student.login_time) {
-                        studentInfoHtml += `
-                                <div class="small text-muted">IP: ${student.ip || '未知'}</div>
-                                <div class="timestamp">登录: ${student.login_time}</div>`;
-                        if (student.logout_time) {
-                            studentInfoHtml += `<div class="timestamp text-danger">结束考试: ${student.logout_time}</div>`;
-                        }
-                    }
-                    studentInfoHtml += `
+                let studentInfoHtml = `
+                    <li class="list-group-item d-flex justify-content-between align-items-center student-card ${statusClass}" style="cursor:pointer;${extraStyle}" onclick="showStudentScreenshots('${student.exam_id}','${student.id}','${student.username}')" id="student-item-${student.id}">
+                        <div>
+                            <div class="fw-bold">
+                                ${student.username} 
+                                <span id="student-status-${student.id}">${statusBadge}</span>
                             </div>
-                            <div class="student-login-history mt-2">
-                                <button class="btn btn-sm btn-outline-secondary" type="button"
-                                    data-bs-toggle="collapse"
-                                    data-bs-target="#login-history-list-${student.exam_id}-${student.id}"
-                                    aria-expanded="false"
-                                    aria-controls="login-history-list-${student.exam_id}-${student.id}"
-                                    onclick="event.stopPropagation(); toggleLoginHistory('${student.exam_id}','${student.id}')"
-                                    style="${loginHistoryHasRedGap[student.id] ? 'background-color:#ffcccc;' : ''}">
-                                    登录/退出历史 <span id="login-history-count-${student.exam_id}-${student.id}"></span>
-                                </button>
-                                <div class="collapse" id="login-history-list-${student.exam_id}-${student.id}">
-                                    <div class="card card-body p-2" style="background:#f8f9fa;">
-                                        <div class="text-muted">加载中...</div>
-                                    </div>
+                            <div class="small text-muted" id="student-ip-${student.id}">IP: ${student.ip || '未知'}</div>
+                            <div class="timestamp" id="student-login-${student.id}">${student.login_time ? `登录: ${student.login_time}` : ''}</div>
+                            <div class="timestamp text-danger" id="student-logout-${student.id}">${student.logout_time ? `结束考试: ${student.logout_time}` : ''}</div>
+                        </div>
+                        <div class="student-login-history mt-2">
+                            <button class="btn btn-sm btn-outline-secondary" type="button"
+                                data-bs-toggle="collapse"
+                                data-bs-target="#login-history-list-${student.exam_id}-${student.id}"
+                                aria-expanded="false"
+                                aria-controls="login-history-list-${student.exam_id}-${student.id}"
+                                onclick="event.stopPropagation(); loadStudentLoginHistory('${student.exam_id}','${student.id}')"
+                                >
+                                登录/退出历史 <span id="login-history-count-${student.exam_id}-${student.id}">(${student.login_count})</span>
+                            </button>
+                            <div class="collapse" id="login-history-list-${student.exam_id}-${student.id}">
+                                <div class="card card-body p-2" style="background:#f8f9fa;">
+                                    <div class="text-muted">加载中...</div>
                                 </div>
                             </div>
-                        </li>`;
-                    studentList.append(studentInfoHtml);
-                    setTimeout(() => {
-                        loadStudentLoginHistory(student.exam_id, student.id);
-                    }, 0);
-                });
+                        </div>
+                    </li>`;
+                studentList.append(studentInfoHtml);
             });
+            // --- 这里更新lastStudentStatusMap ---
+            if (window.lastStudentStatusMap !== undefined) {
+                window.lastStudentStatusMap = {};
+                students.forEach(s => {
+                    window.lastStudentStatusMap[s.id] = {
+                        status: s.status,
+                        login_time: s.login_time,
+                        logout_time: s.logout_time,
+                        login_count: s.login_count
+                    };
+                });
+            }
         }
 
         // 查看考生截图弹窗
@@ -661,8 +679,8 @@
                         }
                         return {url, time, raw: match ? match[1] : ''};
                     });
-                    // 按时间正序排序
-                    screenshots.sort((a, b) => a.raw.localeCompare(b.raw));
+                    // 按时间逆序排序
+                    screenshots.sort((a, b) => b.raw.localeCompare(a.raw));
 
                     let html = `<h5 class='mb-3'>${username} 的截图</h5>`;
                     if (screenshots.length === 0) {
@@ -898,7 +916,7 @@
 
         function startAutoRefresh() {
             if (autoRefreshTimer) clearInterval(autoRefreshTimer);
-            autoRefreshTimer = setInterval(fetchData, 30000);
+            autoRefreshTimer = setInterval(function() { fetchData(false); }, 5000);
         }
         function stopAutoRefresh() {
             if (autoRefreshTimer) clearInterval(autoRefreshTimer);
@@ -910,7 +928,7 @@
             showPasswordModal();
             updateCurrentTime();
             setInterval(updateCurrentTime, 1000);  // 每秒更新当前时间
-            fetchData();
+            fetchData(true);
             startAutoRefresh();
             $('#stop-auto-refresh').on('change', function() {
                 if (this.checked) {
@@ -919,11 +937,12 @@
                     startAutoRefresh();
                 }
             });
+            // 修改刷新按钮为只刷新当前考试详情
+            $('.refresh-btn').off('click').on('click', function() { fetchData(false); });
         });
     </script>
 </body>
 </html>
-
 
 
 

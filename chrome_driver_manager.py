@@ -13,6 +13,8 @@ import platform
 import re
 import subprocess
 from pathlib import Path
+import requests
+import shutil
 
 # Windows系统需要导入winreg模块
 if sys.platform == 'win32':
@@ -22,7 +24,7 @@ if sys.platform == 'win32':
 # Chrome版本检测部分
 #------------------------------------------------------------------------------
 
-def get_chrome_version_windows():
+def get_chrome_version():
     """
     从Windows注册表获取Chrome浏览器版本
 
@@ -57,8 +59,9 @@ def get_chrome_version_windows():
         if os.path.exists(chrome_path):
             try:
                 # 使用wmic获取文件版本信息
+                chrome_path = chrome_path.replace("\\", "\\\\")
                 output = subprocess.check_output(
-                    f'wmic datafile where name="{chrome_path.replace("\\", "\\\\")}" get Version /value',
+                    f'wmic datafile where name="{chrome_path}" get Version /value',
                     shell=True
                 ).decode('utf-8', 'ignore')
 
@@ -68,74 +71,6 @@ def get_chrome_version_windows():
                     return match.group(1).strip()
             except subprocess.SubprocessError:
                 pass
-
-    return None
-
-def get_chrome_version_linux():
-    """
-    从Linux系统获取Chrome浏览器版本
-
-    Returns:
-        str: Chrome版本号，如果未找到则返回None
-    """
-    try:
-        # 尝试使用google-chrome命令获取版本
-        output = subprocess.check_output(
-            ['google-chrome', '--version'],
-            stderr=subprocess.STDOUT
-        ).decode('utf-8')
-        match = re.search(r'Google Chrome (\d+\.\d+\.\d+\.\d+)', output)
-        if match:
-            return match.group(1)
-    except (subprocess.SubprocessError, FileNotFoundError):
-        # 尝试使用google-chrome-stable命令
-        try:
-            output = subprocess.check_output(
-                ['google-chrome-stable', '--version'],
-                stderr=subprocess.STDOUT
-            ).decode('utf-8')
-            match = re.search(r'Google Chrome (\d+\.\d+\.\d+\.\d+)', output)
-            if match:
-                return match.group(1)
-        except (subprocess.SubprocessError, FileNotFoundError):
-            pass
-
-    return None
-
-def get_chrome_version_mac():
-    """
-    从Mac系统获取Chrome浏览器版本
-
-    Returns:
-        str: Chrome版本号，如果未找到则返回None
-    """
-    try:
-        # Mac上Chrome的默认位置
-        output = subprocess.check_output(
-            ['/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', '--version'],
-            stderr=subprocess.STDOUT
-        ).decode('utf-8')
-        match = re.search(r'Google Chrome (\d+\.\d+\.\d+\.\d+)', output)
-        if match:
-            return match.group(1)
-    except (subprocess.SubprocessError, FileNotFoundError):
-        pass
-
-    return None
-
-def get_chrome_version():
-    """
-    获取当前系统安装的Chrome浏览器版本
-
-    Returns:
-        str: Chrome版本号，如果未找到则返回None
-    """
-    if sys.platform == 'win32':
-        return get_chrome_version_windows()
-    elif sys.platform == 'linux':
-        return get_chrome_version_linux()
-    elif sys.platform == 'darwin':
-        return get_chrome_version_mac()
 
     return None
 
@@ -172,7 +107,6 @@ def find_local_chromedriver():
     # 常见的ChromeDriver位置
     chromedriver_paths = []
 
-
     chromedriver_name = "chromedriver.exe"
 
     # 当前目录及子目录
@@ -203,10 +137,25 @@ def find_local_chromedriver():
     for path in chromedriver_paths:
         if os.path.exists(path):
             print(f"找到本地ChromeDriver: {path}")
+            print('path:', path)
             return path
-
     print("未找到本地ChromeDriver")
     return None
+
+def download_chromedriver_from_server(chrome_version, server_url):
+    """根据主版本号从服务器下载chromedriver，重命名为chromedriver.exe"""
+    major_version = chrome_version.split('.')[0]
+    download_url = f"{server_url}/chromedriver_{major_version}.exe"
+    local_path = os.path.join(os.path.dirname(__file__), "chromedriver.exe")
+    print(f"尝试从 {download_url} 下载 chromedriver ...")
+    r = requests.get(download_url, stream=True)
+    if r.status_code == 200:
+        with open(local_path, "wb") as f:
+            shutil.copyfileobj(r.raw, f)
+        print("chromedriver 下载完成")
+        return local_path
+    else:
+        raise RuntimeError(f"下载chromedriver失败，服务器返回: {r.status_code}")
 
 def is_compatible_chromedriver(driver_path, chrome_version):
     """
@@ -250,6 +199,7 @@ def is_compatible_chromedriver(driver_path, chrome_version):
             return True
 
         print(f"本地ChromeDriver版本 {driver_version} 与Chrome版本 {chrome_version} 不兼容")
+        # 删除本地不兼容的chromedriver
         return False
 
     except Exception as e:
