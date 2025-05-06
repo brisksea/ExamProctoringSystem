@@ -39,6 +39,22 @@ class ConfigManager:
             "allowed_apps": [
                 {"exe": "chrome.exe", "name": "谷歌浏览器"},
                 {"exe": "msedge.exe", "name": "Edge浏览器"},
+                {"exe": "notepad.exe", "name": "记事本"},
+                {"exe": "calc.exe", "name": "计算器"},
+                {"exe": "devcpp.exe", "name": "Dev-C++"},
+                {"exe": "cursor.exe", "name": "Cursor"},
+                {"exe": "mspaint.exe", "name": "画图"},
+                {"exe": "evcapture.exe", "name": "录屏"},
+                {"exe": "ConsolePauser.exe", "name": "Dev-C++"}
+            ],
+
+            "allowed_executables": [
+                {"path": "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe", "name": "谷歌浏览器"},
+            ], 
+
+            "allowed_apps1": [
+                {"exe": "chrome.exe", "name": "谷歌浏览器"},
+                {"exe": "msedge.exe", "name": "Edge浏览器"},
                 {"exe": "firefox.exe", "name": "火狐浏览器"},
                 {"exe": "notepad.exe", "name": "记事本"},
                 {"exe": "notepad++.exe", "name": "Notepad++"},
@@ -60,7 +76,7 @@ class ConfigManager:
                 {"exe": "powershell.exe", "name": "PowerShell"},
                 {"exe": "WindowsTerminal.exe", "name": "Windows Terminal"}
             ],
-            "allowed_executables": [
+            "allowed_executables1": [
                 {"path": "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe", "name": "谷歌浏览器"},
                 {"path": "C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe", "name": "谷歌浏览器(32位)"},
                 {"path": "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe", "name": "Edge浏览器"},
@@ -99,7 +115,7 @@ class ConfigManager:
             "only_monitor_foreground": True,  # 只监控前台窗口，忽略后台进程
 
             # 服务器配置
-            "server_url": "http://127.0.0.1:5000",  # 考试监控服务器URL
+            #"server_url": "http://10.188.2.252:5000",  # 考试监控服务器URL
             "enable_server_reporting": True,  # 是否启用服务器报告功能
             "screenshot_on_violation": True,   # 是否在违规时截图
             "end_violation_foreground_process": False  # 是否结束违规前台进程

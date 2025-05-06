@@ -12,10 +12,11 @@ import time
 import signal
 import atexit
 import threading
-from datetime import datetime, timedelta
 import redis
-from redis.connection import ConnectionPool
-from flask import Flask, request, render_template, jsonify, send_from_directory
+from datetime import datetime, timedelta
+from redis_helper import get_redis, get_all_exams, get_exam, get_violations, cleanup_redis, \
+    get_exam_students, update_exam_status, configure_redis_persistence, find_student_in_exams, get_exam_violations
+from flask import Flask, request, render_template, jsonify, send_from_directory, send_file
 
 # 创建Flask应用
 app = Flask(__name__)
@@ -31,87 +32,6 @@ if not os.path.exists(DATA_DIR):
 if not os.path.exists(SCREENSHOTS_DIR):
     os.makedirs(SCREENSHOTS_DIR)
 
-# Redis连接池配置
-REDIS_CONFIG = {
-    'host': 'localhost',
-    'port': 6379,
-    'db': 0,
-    'decode_responses': True,
-    'max_connections': 10,  # 每个进程的最大连接数
-    'socket_timeout': 5,    # 连接超时时间
-    'socket_connect_timeout': 5,  # 建立连接超时时间
-    'retry_on_timeout': True,     # 超时时重试
-}
-
-# 创建Redis连接池
-redis_pool = ConnectionPool(**REDIS_CONFIG)
-
-def get_redis():
-    """获取Redis连接"""
-    try:
-        client = redis.Redis(connection_pool=redis_pool)
-        # 测试连接
-        client.ping()
-        return client
-    except redis.ConnectionError as e:
-        print(f"Redis连接错误: {str(e)}")
-        raise
-
-# 配置Redis持久化
-def configure_redis_persistence():
-    """配置Redis持久化选项"""
-    try:
-        client = get_redis()
-        # 配置RDB持久化
-        client.config_set('save', '900 1 300 10 60 10000')
-        client.config_set('dir', DATA_DIR)
-        client.config_set('dbfilename', 'exam_monitor.rdb')
-
-        # 配置AOF持久化
-        client.config_set('appendonly', 'yes')
-        client.config_set('appendfilename', 'exam_monitor.aof')
-        client.config_set('appendfsync', 'everysec')
-
-        print(f"进程 {os.getpid()}: Redis持久化配置完成")
-    except redis.RedisError as e:
-        print(f"进程 {os.getpid()}: Redis持久化配置失败: {str(e)}")
-
-def save_redis_data():
-    """保存Redis数据"""
-    try:
-        client = get_redis()
-        print(f"进程 {os.getpid()}: 正在保存Redis数据...")
-        client.save()
-        print(f"进程 {os.getpid()}: Redis数据保存完成")
-    except redis.RedisError as e:
-        print(f"进程 {os.getpid()}: Redis数据保存失败: {str(e)}")
-
-def cleanup_redis():
-    """清理Redis连接并保存数据"""
-    try:
-        client = get_redis()
-        # 将所有考试中的在线学生标记为离线
-        exams = get_all_exams()
-        for exam in exams:
-            exam_id = exam['id']
-            students = get_exam_students(exam_id)
-            for student_id, student in students.items():
-                if student.get('status') == 'online':
-                    student_key = f'exam:{exam_id}:student:{student_id}'
-                    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                    client.hset(student_key, 'status', 'offline')
-                    client.hset(student_key, 'logout_time', timestamp)
-                    print(f"进程 {os.getpid()}: 学生 {student['username']} (考试: {exam_id}) 标记为离线")
-
-        # 保存数据
-        save_redis_data()
-
-        # 关闭连接池
-        redis_pool.disconnect()
-        print(f"进程 {os.getpid()}: Redis连接已关闭")
-    except Exception as e:
-        print(f"进程 {os.getpid()}: 清理Redis时出错: {str(e)}")
-
 def signal_handler(signum, frame):
     """信号处理函数"""
     print(f"\n进程 {os.getpid()}: 接收到信号 {signum}")
@@ -125,140 +45,6 @@ signal.signal(signal.SIGTERM, signal_handler)  # 终止信号
 # 注册退出处理函数
 atexit.register(cleanup_redis)
 
-
-
-def get_violations():
-    """获取所有违规记录"""
-    client = get_redis()
-    violations = []
-    violation_count = client.llen('violations')
-    if violation_count > 0:
-        violations_data = client.lrange('violations', 0, -1)
-        violations = [json.loads(v) for v in violations_data]
-    return violations
-
-EXAM_CONFIG_KEY = "exam_configs"  # Redis中存储考试配置的key
-
-def create_exam(exam_data):
-    """创建新考试"""
-    client = get_redis()
-    exam_id = client.incr('exam_id_counter')
-
-    exam_config = {
-        'id': exam_id,
-        'name': exam_data['name'],
-        'start_time': exam_data['start_time'],
-        'end_time': exam_data['end_time'],
-        'created_at': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        'status': 'pending',  # pending, active, completed
-        'default_url': exam_data['default_url']
-    }
-
-    # 存储考试配置
-    client.hset(EXAM_CONFIG_KEY, exam_id, json.dumps(exam_config))
-    return exam_config
-
-def get_exam(exam_id):
-    """获取考试信息"""
-    client = get_redis()
-    exam_data = client.hget(EXAM_CONFIG_KEY, exam_id)
-    return json.loads(exam_data) if exam_data else None
-
-def get_all_exams():
-    """获取所有考试信息"""
-    client = get_redis()
-    exams = client.hgetall(EXAM_CONFIG_KEY)
-    return [json.loads(exam_data) for exam_data in exams.values()]
-
-def update_exam_status():
-    """更新所有考试的状态"""
-    client = get_redis()
-    now = datetime.now()
-    exams = get_all_exams()
-    updated_count = 0
-
-    for exam in exams:
-        exam_id = exam['id']
-        current_status = exam['status']
-        start_time = datetime.strptime(exam['start_time'], "%Y-%m-%dT%H:%M")
-        end_time = datetime.strptime(exam['end_time'], "%Y-%m-%dT%H:%M")
-
-        # 确定考试应该处于的状态
-        if now < start_time:
-            new_status = 'pending'  # 未开始
-        elif start_time <= now <= end_time:
-            new_status = 'active'   # 进行中
-        else:
-            new_status = 'completed'  # 已结束
-
-        # 如果状态需要更新
-        if new_status != current_status:
-            exam['status'] = new_status
-            client.hset(EXAM_CONFIG_KEY, exam_id, json.dumps(exam))
-            updated_count += 1
-            print(f"考试状态更新: ID={exam_id}, 名称={exam['name']}, {current_status} -> {new_status}")
-
-    return updated_count
-
-def get_exam_students(exam_id):
-    """获取指定考试的所有学生"""
-    students = {}
-    client = get_redis()
-    keys = client.keys(f'exam:{exam_id}:student:*')
-    for key in keys:
-        if key.endswith(":screenshots") or key.endswith(":logins"):
-            continue
-        student_data = client.hgetall(key)
-        if student_data:
-            student_id = key.split(':')[-1]
-            students[student_id] = student_data
-    return students
-
-def find_student_in_exams(username):
-    """查找学生所在的所有考试"""
-    active_exams = []
-    student_exams = []
-
-    # 获取所有考试
-    exams = get_all_exams()
-
-    # 先更新考试状态
-    update_exam_status()
-
-    # 筛选出正在进行中的考试
-    for exam in exams:
-        if exam['status'] == 'active':
-            active_exams.append(exam)
-
-    # 在每个正在进行的考试中查找学生
-    for exam in active_exams:
-        exam_id = exam['id']
-        students = get_exam_students(exam_id)
-
-        for student_id, student in students.items():
-            if student['username'] == username:
-                # 找到了学生
-                student_exam = {
-                    'exam_id': exam_id,
-                    'student_id': student_id,
-                    'exam_name': exam['name'],
-                    'start_time': exam['start_time'],
-                    'end_time': exam['end_time']
-                }
-                student_exams.append(student_exam)
-
-    return student_exams
-
-def get_exam_violations(exam_id):
-    """获取指定考试的所有违规记录"""
-    client = get_redis()
-    violations = []
-    violation_key = f'exam:{exam_id}:violations'
-    violation_count = client.llen(violation_key)
-    if violation_count > 0:
-        violations_data = client.lrange(violation_key, 0, -1)
-        violations = [json.loads(v) for v in violations_data]
-    return violations
 
 @app.route('/')
 def index():
@@ -319,7 +105,7 @@ def import_students():
                     'id': str(student_id),
                     'username': name,
                     'exam_id': exam_id,
-                    'status': 'offline',
+                    'status': 'inactive',
                     'created_at': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 }
 
@@ -553,13 +339,11 @@ def student_logout():
     if not student_id or not exam_id:
         return jsonify({"status": "error", "message": "Missing student_id or exam_id"}), 400
 
-    client = get_redis()  # 获取Redis连接
-
-    # 更新学生状态
+    client = get_redis()
     student_key = f'exam:{exam_id}:student:{student_id}'
     if client.exists(student_key):
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        client.hset(student_key, 'status', 'offline')
+        client.hset(student_key, 'status', 'logout')
         client.hset(student_key, 'logout_time', timestamp)
 
         student_data = client.hgetall(student_key)
@@ -758,13 +542,24 @@ def manage_exams():
 
 @app.route('/api/exams/<int:exam_id>/students')
 def get_exam_students_api(exam_id):
-    """获取指定考试的学生信息"""
-    return jsonify(list(get_exam_students(exam_id).values()))
+    """获取指定考试的学生信息，附带login_count字段"""
+    client = get_redis()
+    students = get_exam_students(exam_id)
+    result = []
+    for student in students.values():
+        # 获取登录历史条数
+        login_key = f"exam:{exam_id}:student:{student['id']}:logins"
+        login_count = client.llen(login_key)
+        student['login_count'] = login_count
+        result.append(student)
+    return jsonify(result)
 
 @app.route('/api/exams/<int:exam_id>/violations')
 def get_exam_violations_api(exam_id):
     """获取指定考试的违规记录"""
     return jsonify(get_exam_violations(exam_id))
+
+EXAM_CONFIG_KEY = "exam_configs"  # Redis中存储考试配置的key
 
 @app.route('/api/exams/<int:exam_id>', methods=['DELETE'])
 def delete_exam(exam_id):
@@ -809,71 +604,6 @@ def delete_exam(exam_id):
         print(f"删除考试失败: {str(e)}")
         return jsonify({"status": "error", "message": f"删除失败：{str(e)}"}), 500
 
-# 长时间不活跃的学生清理任务
-def cleanup_inactive_students():
-    """清理长时间不活跃的学生（自动登出）"""
-    while True:
-        time.sleep(60)  # 每分钟检查一次
-        try:
-            client = get_redis()
-            now = datetime.now()
-
-            # 获取所有考试
-            exams = get_all_exams()
-
-            # 对每个考试的学生进行检查
-            for exam in exams:
-                exam_id = exam['id']
-                students = get_exam_students(exam_id)
-
-                for student_id, student in students.items():
-                    if student['status'] == 'online' and 'last_active' in student:
-                        last_active = datetime.strptime(student['last_active'], "%Y-%m-%d %H:%M:%S")
-                        inactive_minutes = (now - last_active).total_seconds() / 60
-
-                        # 如果超过5分钟没有活动，自动登出
-                        if inactive_minutes > 5:
-                            student_key = f'exam:{exam_id}:student:{student_id}'
-                            timestamp = now.strftime("%Y-%m-%d %H:%M:%S")
-                            client.hset(student_key, 'status', 'offline')
-                            client.hset(student_key, 'logout_time', timestamp)
-                            # 写入logout历史
-                            logout_record = {
-                                "type": "logout",
-                                "timestamp": timestamp,
-                                "ip": student.get('ip', 'unknown')
-                            }
-                            client.rpush(f"exam:{exam_id}:student:{student_id}:logins", json.dumps(logout_record))
-                            print(f"进程 {os.getpid()}: 学生 {student['username']} (ID: {student_id}, 考试: {exam_id}) 长时间无心跳，自动登出")
-        except Exception as e:
-            print(f"进程 {os.getpid()}: 清理不活跃学生时出错: {str(e)}")
-
-# 考试状态更新任务
-def update_exam_status_task():
-    """定期更新考试状态的任务"""
-    while True:
-        time.sleep(30)  # 每30秒检查一次
-        try:
-            updated_count = update_exam_status()
-            if updated_count > 0:
-                print(f"进程 {os.getpid()}: 已更新 {updated_count} 个考试的状态")
-        except Exception as e:
-            print(f"进程 {os.getpid()}: 更新考试状态时出错: {str(e)}")
-
-# 启动后台任务线程
-def start_background_tasks():
-    """启动所有后台任务线程"""
-    # 启动学生清理线程
-    inactive_thread = threading.Thread(target=cleanup_inactive_students)
-    inactive_thread.daemon = True
-    inactive_thread.start()
-    print(f"进程 {os.getpid()}: 学生清理线程已启动")
-
-    # 启动考试状态更新线程
-    exam_status_thread = threading.Thread(target=update_exam_status_task)
-    exam_status_thread.daemon = True
-    exam_status_thread.start()
-    print(f"进程 {os.getpid()}: 考试状态更新线程已启动")
 
 @app.route('/api/screenshot', methods=['POST'])
 def upload_screenshot():
@@ -897,6 +627,13 @@ def upload_screenshot():
     key = f"exam:{exam_id}:student:{student_id}:screenshots"
     client.rpush(key, filename)
 
+    # --- 新增：更新学生last_active和状态 ---
+    student_key = f"exam:{exam_id}:student:{student_id}"
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    if client.exists(student_key):
+        client.hset(student_key, 'last_active', now_str)
+        client.hset(student_key, 'status', 'online')
+
     return jsonify({"status": "success", "message": "截图已上传", "filename": filename})
 
 @app.route('/api/exams/<int:exam_id>/students/<student_id>/screenshots')
@@ -915,17 +652,27 @@ def get_student_logins(exam_id, student_id):
     records = client.lrange(key, 0, -1)
     return jsonify([json.loads(r) for r in records])
 
+# ChromeDriver下载API
+@app.route('/chromedriver_<int:major_version>.exe')
+def download_chromedriver(major_version):
+    """根据主版本号下载对应的chromedriver可执行文件"""
+    # 假设所有chromedriver文件都放在 DATA_DIR/chromedrivers 目录下
+    chromedriver_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'chromedrivers')
+    print(chromedriver_dir)
+    filename = f'chromedriver_{major_version}.exe'
+    file_path = os.path.join(chromedriver_dir, filename)
+    print(file_path)
+    if not os.path.exists(file_path):
+        return jsonify({"status": "error", "message": f"未找到chromedriver_{major_version}.exe"}), 404
+    # 设置Content-Disposition，建议保存为chromedriver.exe
+    print("send")
+    return send_file(file_path, as_attachment=True, download_name='chromedriver.exe')
+
 if __name__ == '__main__':
     try:
-        # 配置Redis持久化
-        configure_redis_persistence()
-
-        # 启动后台任务线程
-        start_background_tasks()
-
         # 启动服务器
         print(f"进程 {os.getpid()}: 考试监控服务器启动在 http://0.0.0.0:5000/")
-        app.run(host='0.0.0.0', port=5000, debug=True)  # 启用debug模式以查看错误信息
+        app.run(host='0.0.0.0', port=5000, debug=True)
     except Exception as e:
         print(f"进程 {os.getpid()}: 服务器启动失败: {str(e)}")
         cleanup_redis()

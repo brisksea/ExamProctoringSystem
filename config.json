@@ -5,7 +5,12 @@
         {"exe1": "notepad.exe", "name": "记事本"},
         {"exe": "calc.exe", "name": "计算器"},
         {"exe": "devcpp.exe", "name": "Dev-C++"},
-        {"exe": "cursor.exe", "name": "Cursor"}
+        {"exe": "cursor.exe", "name": "Cursor"},
+        {"exe": "mspaint.exe", "name": "画图"},
+        {"exe": "evcapture.exe", "name": "录屏"},
+        {"exe": "ConsolePauser.exe", "name": "Dev-C++"},
+        {"exe": "code.exe", "name": "vscode"}
+
     ],
     "allowed_executables": [
         {"path": "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe", "name": "谷歌浏览器"},
@@ -13,7 +18,8 @@
     ],
 
     "allowed_urls": [
-        "https://exam_.cn"
+        "https://www.baidu.com",
+        "https://cn.bing.com"
     ],
     "allowed_url_patterns": [
         "^https://exam\\.cn/.*$"

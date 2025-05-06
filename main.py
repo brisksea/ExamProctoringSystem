@@ -42,9 +42,10 @@ class LoginWindow:
         """
         self.root = root
         self.on_login_success = on_login_success
+        self.server_url = 'http://127.0.0.1:5000'
 
         # 创建配置管理器以获取默认服务器地址
-        self.config_manager = ConfigManager()
+        self.config_manager = ConfigManager(None, self.server_url)
 
         # 创建API客户端
         self.api_client = ApiClient()
@@ -106,7 +107,7 @@ class LoginWindow:
             server_label.pack(side=tk.LEFT, padx=5)
 
             # 获取默认服务器地址
-            default_server = self.config_manager.get_server_url()
+            default_server = self.server_url
 
             self.server_entry = tk.Entry(server_frame, width=25)
             self.server_entry.pack(side=tk.LEFT, padx=5, fill=tk.X, expand=True)
@@ -309,8 +310,8 @@ class ExamClient:
         # 登录成功后设置为已连接
         self.connected_to_server = True
 
-        # 开始心跳线程
-        self.start_heartbeat()
+        # 开始心跳线程, 用定时发送截屏取代心跳
+        #self.start_heartbeat()
 
         # 初始化停止按钮状态
         self.stop_button_initialized = False
