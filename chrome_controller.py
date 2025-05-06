@@ -200,26 +200,26 @@ class ChromeController:
         if not self.is_controlled(pid):
             return "未受控的Chrome浏览器，请切换到允许的浏览器进行考试"
         
-        print("比较：",self.window_title, "， ", window_title)
+        #print("比较：",self.window_title, "， ", window_title)
         
         #如果chrome的链接没有发生变化不检查
         if self.window_title == window_title:
             return None
         title = window_title.split(" - G")[0]
-        print('check')
+
         try:
             # 获取所有标签页句柄
             
             handles = self.driver.window_handles
+            current_handle = handles[0]
             for handle in handles:
                 self.driver.switch_to.window(handle)
                 url = self.driver.current_url
                 if not self._is_url_allowed(url):
                     error_msg = f"未授权的URL: {url}，切换到允许的URL进行考试"
-                    print(error_msg)
                     return error_msg
                 #通过标题判断为当前标签
-                print(self.driver.title)
+                #print(self.driver.title)
                 if title == self.driver.title:
                     current_handle = handle
             self.driver.switch_to.window(current_handle)

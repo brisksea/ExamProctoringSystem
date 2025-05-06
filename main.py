@@ -12,7 +12,7 @@ from io import BytesIO
 import socket
 import hashlib
 import traceback
-from datetime import datetime
+from datetime import datetime, timezone
 import psutil
 
 try:
@@ -42,13 +42,7 @@ class LoginWindow:
         """
         self.root = root
         self.on_login_success = on_login_success
-        self.server_url = 'http://127.0.0.1:5000'
-
-        # 创建配置管理器以获取默认服务器地址
-        self.config_manager = ConfigManager(None, self.server_url)
-
-        # 创建API客户端
-        self.api_client = ApiClient()
+        self.server_url = '10.188.2.252'
 
         # 设置窗口属性
         self.root.title("考试监控系统 - 登录")
@@ -114,7 +108,7 @@ class LoginWindow:
             self.server_entry.insert(0, default_server)  # 设置默认值
 
             # 服务器提示
-            server_info = tk.Label(main_frame, text="服务器格式: http://IP地址:端口\n默认服务器地址已预填",
+            server_info = tk.Label(main_frame, text="服务器IP地址",
                                font=("Arial", 8), fg="#555555", justify=tk.CENTER)
             server_info.pack(pady=5)
 
@@ -137,23 +131,33 @@ class LoginWindow:
     def login(self):
         """处理登录"""
         username = self.name_entry.get().strip()
-        server_url = self.server_entry.get().strip()
+        server_ip = self.server_entry.get().strip()
 
         if not username:
             messagebox.showwarning("警告", "请输入您的姓名")
             return
 
-        if not server_url:
+        if not server_ip:
             messagebox.showwarning("警告", "请输入服务器地址")
             return
+        else:
+            import re
+            pattern = r'^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$'
+            match = re.match(pattern, server_ip)
+            if not match:
+                messagebox.showwarning("警告", "请输入有效的服务器IP地址")
+                return
+        
+        # 创建API客户端
+        self.api_client = ApiClient(server_ip)
 
         # 使用API客户端进行登录
-        success, login_data, error_message = self.api_client.login(username, server_url)
+        success, login_data, error_message = self.api_client.login(username)
         #print(success, login_data, error_message)
 
         if success:
             # 登录成功，传递用户名、服务器地址和login_data
-            self.on_login_success(username, server_url, login_data)
+            self.on_login_success(username, self.api_client, login_data)
         else:
             # 登录失败，显示错误消息
             messagebox.showerror("登录失败", error_message)
@@ -199,13 +203,13 @@ class ExamClient:
             interval = 30
         return interval
 
-    def on_login_success(self, username, server_url, login_data=None):
+    def on_login_success(self, username, api_client, login_data=None):
         """
         登录成功的回调
 
         Args:
             username: 用户名
-            server_url: 服务器URL地址
+            api_client: 服务器API接口
             login_data: 登录返回的详细信息
         """
         # 关闭登录窗口
@@ -249,8 +253,11 @@ class ExamClient:
         # 禁止用户调整窗口大小
         self.root.resizable(False, False)
 
+        # 创建API客户端
+        self.api_client = api_client
         # 创建配置管理器，传入服务器URL以从服务器获取配置
-        self.config_manager = ConfigManager(server_url=server_url)
+        self.config_manager = ConfigManager(api_client = self.api_client)
+        
         # 刷新截图间隔
         self.screenshot_interval = self.get_screenshot_interval_from_config()
 
@@ -268,12 +275,6 @@ class ExamClient:
         else:
             self._exam_allowed_urls = self.config_manager.get_allowed_urls()
 
-        # 设置服务器URL
-        if server_url:
-            self.server_url = server_url
-
-        # 创建API客户端
-        self.api_client = ApiClient(server_url)
 
         # 创建Chrome控制器
         self.chrome_controller = ChromeController(self.config_manager, self.exam_default_url)
@@ -315,6 +316,10 @@ class ExamClient:
 
         # 初始化停止按钮状态
         self.stop_button_initialized = False
+        
+        # 获取服务器时间并与本地时间比较
+        check_time_sync(self.api_client, self.log)
+
 
         # 登录成功后自动启动考试模式
         self.root.after(1000, self.start_monitoring)  # 延迟1秒启动，确保界面已完全加载
@@ -409,7 +414,7 @@ class ExamClient:
             return False
 
         # 检查是否连接到服务器
-        if not self.connected_to_server or not self.server_url:
+        if not self.connected_to_server:
             self.log("未连接到服务器，无法报告违规")
             return False
 
@@ -705,8 +710,7 @@ class ExamClient:
                     else:
                         foreground_title, foreground_process = window_info
 
-                    print(f"前台窗口: {foreground_title}, 进程: {foreground_process}")
-                    print("err:", err_msg)
+                    #print(f"前台窗口: {foreground_title}, 进程: {foreground_process}")
 
                     # 更新UI状态
                     self.update_status(foreground_title, foreground_process, err_msg)
@@ -886,7 +890,7 @@ class ExamClient:
         # print(f"[DEBUG] connected_to_server={self.connected_to_server}, server_url={self.server_url}")
         if self.connected_to_server:
             config_source = "服务器" if self.config_manager.is_config_from_server() else "本地"
-            self.server_status_var.set(f"服务器: 已连接 ({self.server_url}))")
+            self.server_status_var.set(f"服务器: 已连接 ({self.api_client.server_url}))")
             self.server_status_label.config(fg="green")
         else:
             self.server_status_var.set("服务器: 未连接\n")
@@ -1175,6 +1179,25 @@ class ExamClient:
             except Exception as e:
                 self.log(f"截图上传线程异常: {str(e)}")
             time.sleep(self.screenshot_interval)
+
+def check_time_sync(api_client, log_func):
+    """检测本地时间与服务器时间差异，超2分钟弹窗警告"""
+    try:
+        status, server_time_str, errmsg = api_client.get_server_time()
+        if status and server_time_str:
+            server_time = datetime.strptime(server_time_str, "%Y-%m-%d %H:%M:%S")
+            local_time = datetime.now()
+            diff = abs((local_time - server_time).total_seconds())
+            if diff > 120:
+                import tkinter.messagebox as messagebox
+                messagebox.showwarning(
+                    "时间不同步",
+                    "检测到您的电脑时间与服务器时间相差超过2分钟。\n"
+                    "请检查并校准本机时间，否则可能影响考试记录的准确性。"
+                )
+    except Exception as e:
+        print(f"获取服务器时间失败: {e}")
+        log_func(f"获取服务器时间失败: {e}")
 
 def main():
     root = tk.Tk()
