@@ -78,13 +78,20 @@
         .exam-card {
             cursor: pointer;
             transition: all 0.3s ease;
+            border: 2px solid transparent;
         }
         .exam-card:hover {
             transform: translateY(-2px);
             box-shadow: 0 6px 12px rgba(0, 0, 0, 0.15);
         }
+        .exam-card.selected {
+            border-color: #0d6efd;
+            box-shadow: 0 0 0 0.25rem rgba(13, 110, 253, 0.25);
+            transform: translateY(-2px);
+        }
         .exam-active {
             border-left: 4px solid #198754;
+            background-color: #fff9c4 !important;
         }
         .exam-pending {
             border-left: 4px solid #ffc107;
@@ -133,6 +140,142 @@
         .btn-danger[disabled] {
             cursor: not-allowed;
             opacity: 0.5;
+        }
+
+        /* 瀑布流布局样式 */
+        .masonry-container {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 1rem;
+            padding: 1rem;
+        }
+        @media (max-width: 1200px) {
+            .masonry-container {
+                grid-template-columns: repeat(2, 1fr);
+            }
+        }
+        @media (max-width: 768px) {
+            .masonry-container {
+                grid-template-columns: 1fr;
+            }
+        }
+        .masonry-item {
+            break-inside: avoid;
+            margin-bottom: 1rem;
+            page-break-inside: avoid;
+        }
+        .masonry-item img {
+            width: 100%;
+            height: auto;
+            display: block;
+            border-radius: 4px;
+            cursor: pointer;
+            transition: transform 0.2s;
+        }
+        .masonry-item img:hover {
+            transform: scale(1.02);
+        }
+        .masonry-item .timestamp {
+            margin-top: 0.5rem;
+            font-size: 0.8rem;
+            color: #6c757d;
+        }
+        .loading-spinner {
+            text-align: center;
+            padding: 1rem;
+            display: none;
+        }
+        .loading-spinner.active {
+            display: block;
+        }
+
+        /* 模态框滚动样式 */
+        .modal-body {
+            max-height: 70vh;
+            overflow-y: auto;
+        }
+        .modal-body::-webkit-scrollbar {
+            width: 8px;
+        }
+        .modal-body::-webkit-scrollbar-track {
+            background: #f1f1f1;
+            border-radius: 4px;
+        }
+        .modal-body::-webkit-scrollbar-thumb {
+            background: #888;
+            border-radius: 4px;
+        }
+        .modal-body::-webkit-scrollbar-thumb:hover {
+            background: #555;
+        }
+
+        /* 违规记录容器样式 */
+        #violations-container {
+            max-height: calc(100vh - 300px);
+            overflow-y: auto;
+            padding: 1rem;
+        }
+        #violations-container::-webkit-scrollbar {
+            width: 8px;
+        }
+        #violations-container::-webkit-scrollbar-track {
+            background: #f1f1f1;
+            border-radius: 4px;
+        }
+        #violations-container::-webkit-scrollbar-thumb {
+            background: #888;
+            border-radius: 4px;
+        }
+        #violations-container::-webkit-scrollbar-thumb:hover {
+            background: #555;
+        }
+
+        /* 违规记录样式 */
+        .violation-item {
+            background: #fff;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            margin-bottom: 1rem;
+            padding: 1rem;
+        }
+        .violation-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 0.5rem;
+            padding-bottom: 0.5rem;
+            border-bottom: 1px solid #eee;
+        }
+        .student-name {
+            font-size: 1.2rem;
+            font-weight: bold;
+            color: #dc3545;
+        }
+        .violation-time {
+            font-size: 0.9rem;
+            color: #6c757d;
+        }
+        .violation-content {
+            display: flex;
+            flex-direction: column;
+            gap: 0.5rem;
+        }
+        .violation-reason {
+            font-size: 1.1rem;
+            color: #333;
+            background: #fff3cd;
+            padding: 0.5rem;
+            border-radius: 4px;
+            border-left: 4px solid #ffc107;
+        }
+        .violation-content img {
+            width: 100%;
+            border-radius: 4px;
+            cursor: pointer;
+            transition: transform 0.2s;
+        }
+        .violation-content img:hover {
+            transform: scale(1.02);
         }
     </style>
 </head>
@@ -206,7 +349,10 @@
                     </div>
                     <div class="card-body">
                         <div id="violations-container">
-                            <p class="text-center text-muted py-5">请选择考试...</p>
+                            <div class="masonry-container"></div>
+                            <div class="loading-spinner">
+                                <div class="spinner-border" role="status"></div>
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -245,6 +391,16 @@
                             <label class="form-label">默认网站（可选）</label>
                             <input type="text" class="form-control" name="default_url" placeholder="如 https://pintia.com">
                             <div class="form-text">本场考试专用，留空则使用全局配置</div>
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label">浏览器设置</label>
+                            <div class="form-check">
+                                <input class="form-check-input" type="checkbox" id="disable_new_tabs" name="disable_new_tabs">
+                                <label class="form-check-label" for="disable_new_tabs">
+                                    禁止浏览器多标签页
+                                </label>
+                                <div class="form-text">启用后，学生只能使用单个标签页浏览</div>
+                            </div>
                         </div>
                         <div class="mb-3">
                             <label class="form-label">导入学生名单（可选）</label>
@@ -315,7 +471,11 @@
                     <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
                 </div>
                 <div class="modal-body">
-                    <!-- 截图内容由JS填充 -->
+                    <div class="masonry-container"></div>
+                    <div class="loading-spinner">
+                        <div class="spinner-border" role="status"></div>
+                        <p class="mt-2">加载中...</p>
+                    </div>
                 </div>
             </div>
         </div>
@@ -358,6 +518,16 @@
         let currentExamId = null;
         let autoRefreshTimer = null;
 
+        // 添加违规截图缓存
+        let loadedViolationScreenshots = new Set();
+        let lastViolationCount = 0;
+
+        // 添加违规截图分页相关变量
+        let currentViolationPage = 1;
+        let hasMoreViolations = true;
+        let isLoadingViolations = false;
+        const VIOLATIONS_PER_PAGE = 12;
+
         // 更新当前时间
         function updateCurrentTime() {
             const now = new Date();
@@ -366,16 +536,14 @@
 
         // 获取数据
         function fetchData(full = true) {
-            if (full) {
-                // 获取考试列表
-                $.ajax({
-                    url: '/api/exams',
-                    method: 'GET',
-                    success: function(exams) {
-                        renderExams(exams);
-                    }
-                });
-            }
+            // 获取考试列表
+            $.ajax({
+                url: '/api/exams',
+                method: 'GET',
+                success: function(exams) {
+                    renderExams(exams);
+                }
+            });
 
             // 如果已选择考试，更新考试详情
             if (currentExamId) {
@@ -407,12 +575,44 @@
                         }
                     }
                 });
-                // 违规记录依然整体刷新
+
+                // 获取违规记录
                 $.ajax({
                     url: `/api/exams/${currentExamId}/violations`,
                     method: 'GET',
+                    data: {
+                        page: 1,
+                        per_page: VIOLATIONS_PER_PAGE
+                    },
                     success: function(violations) {
-                        renderViolations(violations);
+                        if (violations.length > 0) {
+                            const newViolations = violations.filter(v => !loadedViolationScreenshots.has(v.screenshot_url));
+                            
+                            if (newViolations.length > 0) {
+                                // 显示新违规提示
+                                const notification = $(`
+                                    <div class="alert alert-warning alert-dismissible fade show" role="alert" style="position: fixed; top: 20px; right: 20px; z-index: 1050;">
+                                        <strong>发现新的违规记录！</strong> 新增 ${newViolations.length} 条违规记录。
+                                        <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+                                    </div>
+                                `);
+                                $('body').append(notification);
+                                
+                                // 3秒后自动关闭提示
+                                setTimeout(() => {
+                                    notification.alert('close');
+                                }, 3000);
+
+                                // 重置分页状态
+                                currentViolationPage = 1;
+                                hasMoreViolations = true;
+                                loadedViolationScreenshots.clear();
+                                lastViolationCount = 0;
+                                
+                                // 重新渲染所有违规记录
+                                renderViolations(violations, false);
+                            }
+                        }
                     }
                 });
             }
@@ -430,7 +630,7 @@
             exams.forEach(exam => {
                 const card = $(`
                     <div class="col-md-4 mb-3">
-                        <div class="card exam-card exam-${exam.status}">
+                        <div class="card exam-card exam-${exam.status}" data-exam-id="${exam.id}">
                             <div class="card-body" onclick="selectExam(${exam.id})">
                                 <h5 class="card-title">${exam.name}</h5>
                                 <p class="card-text">
@@ -439,10 +639,11 @@
                                     状态: ${getStatusText(exam.status)}<br>
                                     ${exam.default_url ? `<span class='text-muted'>默认网址: <a style='color:#1976d2;' href=${exam.default_url} target="_blank">${exam.default_url}</a></span><br>` : ''}
                                     ${exam.delay_min && exam.delay_min > 0 ? `<span class='text-muted'>监控延时: <span style='color:#fbc02d;'>${exam.delay_min} 分钟</span></span><br>` : ''}
+                                    ${exam.disable_new_tabs ? `<span class='text-muted'>浏览器设置: <span style='color:#f44336;'>禁止多标签页</span></span><br>` : ''}
                                 </p>
                             </div>
                             <div class="card-footer d-flex justify-content-end">
-                                <button class="btn btn-sm btn-danger" onclick="confirmDeleteExam(event, ${exam.id}, '${exam.name}')" ${exam.status === 'active1' ? 'disabled' : ''}>
+                                <button class="btn btn-sm btn-danger" onclick="confirmDeleteExam(event, ${exam.id}, '${exam.name}')" ${exam.status === 'active' ? 'disabled' : ''}>
                                     <i class="bi bi-trash"></i> 删除
                                 </button>
                             </div>
@@ -451,13 +652,30 @@
                 `);
                 examList.append(card);
             });
+
+            // 如果有当前选中的考试，恢复其选中状态
+            if (currentExamId) {
+                $(`.exam-card[data-exam-id="${currentExamId}"]`).addClass('selected');
+            }
         }
 
         // 选择考试
         function selectExam(examId) {
+            // 移除所有考试卡片的选中状态
+            $('.exam-card').removeClass('selected');
+            // 为当前选中的考试卡片添加选中状态
+            $(`.exam-card[data-exam-id="${examId}"]`).addClass('selected');
+            
             currentExamId = examId;
             $('#exam-details').show();
+            // 重置违规截图缓存
+            loadedViolationScreenshots.clear();
+            lastViolationCount = 0;
+            currentViolationPage = 1;
+            hasMoreViolations = true;
+            isLoadingViolations = false;
             fetchExamDetails(examId);
+            setupViolationScroll();
         }
 
         // 获取考试详情
@@ -492,6 +710,7 @@
             const end_time = form.find('[name="end_time"]').val();
             const default_url = form.find('[name="default_url"]').val();
             const delay_min = form.find('[name="delay_min"]').val();
+            const disable_new_tabs = form.find('[name="disable_new_tabs"]').is(':checked');
 
             // 验证必填字段
             if (!name || !start_time || !end_time) {
@@ -505,6 +724,7 @@
             formData.append('end_time', end_time);
             if (default_url) formData.append('default_url', default_url);
             if (delay_min) formData.append('delay_min', delay_min);
+            formData.append('disable_new_tabs', disable_new_tabs);
 
             // 添加学生名单文件（如果有）
             const fileInput = form.find('[name="student_list"]')[0];
@@ -564,9 +784,9 @@
             students.sort((a, b) => {
                 const getStatusPriority = (student) => {
                     if (student.status === 'offline') return 0;   // 掉线最前
-                    if (student.status === 'online') return 1;
-                    if (student.status === 'inactive') return 2;
-                    if (student.status === 'logout') return 3;
+                    if (student.status === 'online') return 3;
+                    if (student.status === 'inactive') return 1;
+                    if (student.status === 'logout') return 2;
                     return 4;
                 };
                 const priorityA = getStatusPriority(a);
@@ -616,7 +836,7 @@
                 }
 
                 let studentInfoHtml = `
-                    <li class="list-group-item d-flex justify-content-between align-items-center student-card ${statusClass}" style="cursor:pointer;${extraStyle}" onclick="showStudentScreenshots('${student.exam_id}','${student.id}','${student.username}')" id="student-item-${student.id}">
+                    <li class="list-group-item d-flex justify-content-between align-items-center student-card ${statusClass}" style="${extraStyle}" id="student-item-${student.id}">
                         <div>
                             <div class="fw-bold">
                                 ${student.username} 
@@ -626,8 +846,13 @@
                             <div class="timestamp" id="student-login-${student.id}">${student.login_time ? `登录: ${student.login_time}` : ''}</div>
                             <div class="timestamp text-danger" id="student-logout-${student.id}">${student.logout_time ? `结束考试: ${student.logout_time}` : ''}</div>
                         </div>
-                        <div class="student-login-history mt-2">
+                        <div class="d-flex flex-column align-items-end">
+                            <button class="btn btn-sm btn-outline-primary mb-2" onclick="showStudentScreenshots('${student.exam_id}','${student.id}','${student.username}')">
+                                查看截图
+                            </button>
+                            <div class="student-login-history">
                             <button class="btn btn-sm btn-outline-secondary" type="button"
+                                    data-bs-toggle="collapse"
                                 data-bs-target="#login-history-list-${student.exam_id}-${student.id}"
                                 aria-expanded="false"
                                 aria-controls="login-history-list-${student.exam_id}-${student.id}"
@@ -638,6 +863,7 @@
                             <div class="collapse" id="login-history-list-${student.exam_id}-${student.id}">
                                 <div class="card card-body p-2" style="background:#f8f9fa;">
                                     <div class="text-muted">加载中...</div>
+                                    </div>
                                 </div>
                             </div>
                         </div>
@@ -658,50 +884,117 @@
             }
         }
 
+        // 添加分页相关的变量
+        let currentScreenshotPage = 1;
+        let hasMoreScreenshots = true;
+        let isLoadingScreenshots = false;
+
         // 查看考生截图弹窗
         function showStudentScreenshots(examId, studentId, username) {
-            // 获取截图
+            // 重置分页状态
+            currentScreenshotPage = 1;
+            hasMoreScreenshots = true;
+            isLoadingScreenshots = false;
+            
+            // 显示加载中的模态框
+            $('#studentScreenshotModal .modal-body').html(`
+                <h5 class='mb-3'>${username} 的截图</h5>
+                <div class="masonry-container"></div>
+                <div class="loading-spinner">
+                    <div class="spinner-border" role="status"></div>
+                    <p class="mt-2">加载中...</p>
+                </div>
+            `);
+            $('#studentScreenshotModal').modal('show');
+            
+            // 加载第一页截图
+            loadScreenshots(examId, studentId, username);
+
+            // 设置滚动监听
+            setupScreenshotScroll(examId, studentId, username);
+        }
+
+        // 添加截图加载函数
+        function loadScreenshots(examId, studentId, username, page = 1) {
+            if (isLoadingScreenshots || !hasMoreScreenshots) return;
+            
+            isLoadingScreenshots = true;
+            
             $.ajax({
                 url: `/api/exams/${examId}/students/${studentId}/screenshots`,
                 method: 'GET',
+                data: { 
+                    page: page,
+                    per_page: 20
+                },
                 success: function(data) {
                     let screenshots = data.screenshots || [];
-                    // 解析时间戳并排序
+                    
+                    // 只解析时间戳，不进行排序
                     screenshots = screenshots.map(url => {
-                        // 例：/screenshots/screenshot_2_1_2024-04-29_10-30-15.png
                         const match = url.match(/screenshot_\d+_\d+_(\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2})\.png$/);
                         let time = '';
                         if (match) {
-                            // 2024-04-29_10-30-15 => 2024-04-29 10:30:15
                             time = match[1].replace('_', ' ').replace(/-/g, ':');
                             time = time.replace(/^(\d{4}):(\d{2}):(\d{2})/, '$1-$2-$3');
                         }
-                        return {url, time, raw: match ? match[1] : ''};
+                        return {url, time};
                     });
-                    // 按时间逆序排序
-                    screenshots.sort((a, b) => b.raw.localeCompare(a.raw));
-
-                    let html = `<h5 class='mb-3'>${username} 的截图</h5>`;
-                    if (screenshots.length === 0) {
-                        html += '<div class="text-muted">暂无截图</div>';
+                    
+                    // 检查是否还有更多截图
+                    hasMoreScreenshots = screenshots.length === 20;
+                    
+                    const masonryContainer = $('#studentScreenshotModal .masonry-container');
+                    
+                    if (screenshots.length === 0 && page === 1) {
+                        masonryContainer.html('<div class="text-muted">暂无截图</div>');
                     } else {
-                        html += '<div class="row">';
+                        // 清空容器
+                        if (page === 1) {
+                            masonryContainer.empty();
+                        }
+                        // 添加截图（直接使用服务器返回的顺序）
                         screenshots.forEach(s => {
-                            html += `
-                                <div class="col-6 col-md-4 mb-3 text-center">
-                                    <img src="${s.url}" alt="截图" class="img-thumbnail screenshot-thumb" style="cursor:pointer;max-height:120px;" onclick="showBigScreenshot('${s.url}')">
-                                    <div class="small text-muted mt-1">${s.time || ''}</div>
+                            const item = $(`
+                                <div class="masonry-item">
+                                    <img src="${s.url}" alt="截图" 
+                                        onclick="showBigScreenshot('${s.url}')"
+                                        loading="lazy">
+                                    <div class="timestamp">${s.time || ''}</div>
                                 </div>
-                            `;
+                            `);
+                            masonryContainer.append(item);
                         });
-                        html += '</div>';
                     }
-                    $('#studentScreenshotModal .modal-body').html(html);
-                    $('#studentScreenshotModal').modal('show');
+                    
+                    // 显示或隐藏加载动画
+                    $('#studentScreenshotModal .loading-spinner').toggleClass('active', hasMoreScreenshots);
+                    
+                    isLoadingScreenshots = false;
                 },
                 error: function() {
                     $('#studentScreenshotModal .modal-body').html('<div class="text-danger">获取截图失败</div>');
-                    $('#studentScreenshotModal').modal('show');
+                    isLoadingScreenshots = false;
+                }
+            });
+        }
+
+        // 设置截图滚动监听
+        function setupScreenshotScroll(examId, studentId, username) {
+            const modalBody = $('#studentScreenshotModal .modal-body');
+            
+            modalBody.off('scroll').on('scroll', function() {
+                if (isLoadingScreenshots || !hasMoreScreenshots) return;
+                
+                const container = $(this);
+                const scrollTop = container.scrollTop();
+                const scrollHeight = container[0].scrollHeight;
+                const clientHeight = container[0].clientHeight;
+                
+                // 当滚动到距离底部100px时加载更多
+                if (scrollHeight - scrollTop - clientHeight < 100) {
+                    currentScreenshotPage++;
+                    loadScreenshots(examId, studentId, username, currentScreenshotPage);
                 }
             });
         }
@@ -713,36 +1006,93 @@
         }
 
         // 渲染异常记录
-        function renderViolations(violations) {
-            const violationsContainer = $('#violations-container');
-            violationsContainer.empty();
-
-            $('#violation-count').text(violations.length);
-
-            if (violations.length === 0) {
-                violationsContainer.html('<p class="text-center text-muted py-5">暂无异常记录</p>');
-                return;
+        function renderViolations(violations, appendMode = false) {
+            const container = $('#violations-container');
+            
+            // 只在第一次加载或完整刷新时清空容器
+            if (!appendMode) {
+                container.empty();
+                lastViolationCount = 0;
             }
-
-            // 按时间排序，最新的在前面
-            violations.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
-
-            violations.forEach(violation => {
-                violationsContainer.append(`
-                    <div class="card mb-3 violation-card">
-                        <div class="card-body">
-                            <div class="d-flex justify-content-between align-items-start mb-2">
-                                <h5 class="card-title mb-0">${violation.username}</h5>
-                                <div class="timestamp">${violation.timestamp}</div>
+            
+            // 更新已加载的违规记录数量
+            lastViolationCount += violations.length;
+            
+            // 检查是否还有更多违规记录
+            hasMoreViolations = violations.length === VIOLATIONS_PER_PAGE;
+            
+            // 渲染违规记录（直接使用服务器返回的顺序）
+            violations.forEach(v => {
+                if (!loadedViolationScreenshots.has(v.screenshot_url)) {
+                    const item = $(`
+                        <div class="violation-item">
+                            <div class="violation-header">
+                                <span class="student-name" style="font-size: 1.2rem; font-weight: bold; color: #dc3545;">${v.username}</span>
+                                <span class="violation-time">${v.timestamp}</span>
                             </div>
-                            <h6 class="card-subtitle mb-2 text-danger">${violation.reason}</h6>
-                            <div class="small text-muted mb-2">IP: ${violation.ip}</div>
-                            <div class="screenshot-container">
-                                <img src="${violation.screenshot_url}" alt="违规截图" class="img-fluid">
-                            </div>
+                            <div class="violation-content">
+                                <div class="violation-reason" style="font-size: 1.1rem; background-color: #fff3cd; border-left: 4px solid #ffc107; padding: 0.5rem; border-radius: 0.25rem; color: #333;">${v.reason}</div>
+                                <img src="${v.screenshot_url}" alt="违规截图" 
+                                    onclick="showBigScreenshot('${v.screenshot_url}')"
+                                    loading="lazy">
                         </div>
                     </div>
                 `);
+                    container.append(item);
+                    loadedViolationScreenshots.add(v.screenshot_url);
+                }
+            });
+            
+            // 更新加载状态
+            isLoadingViolations = false;
+            
+            // 如果还有更多违规记录，显示加载提示
+            if (hasMoreViolations) {
+                container.append('<div class="loading-spinner">加载中...</div>');
+            }
+        }
+
+        // 设置违规记录滚动监听
+        function setupViolationScroll() {
+            const violationsContainer = $('#violations-container');
+            
+            violationsContainer.off('scroll').on('scroll', function() {
+                if (isLoadingViolations || !hasMoreViolations || !currentExamId) return;
+                
+                const container = $(this);
+                const scrollTop = container.scrollTop();
+                const scrollHeight = container[0].scrollHeight;
+                const clientHeight = container[0].clientHeight;
+                
+                // 当滚动到距离底部100px时加载更多
+                if (scrollHeight - scrollTop - clientHeight < 100) {
+                    loadMoreViolations();
+                }
+            });
+        }
+
+        // 加载更多违规记录
+        function loadMoreViolations() {
+            if (isLoadingViolations || !hasMoreViolations || !currentExamId) return;
+            
+            isLoadingViolations = true;
+            currentViolationPage++;
+            
+            $.ajax({
+                url: `/api/exams/${currentExamId}/violations`,
+                method: 'GET',
+                data: {
+                    page: currentViolationPage,
+                    per_page: VIOLATIONS_PER_PAGE
+                },
+                success: function(violations) {
+                    renderViolations(violations, true);
+                    isLoadingViolations = false;
+                },
+                error: function() {
+                    isLoadingViolations = false;
+                    hasMoreViolations = false;
+                }
             });
         }
 
@@ -942,8 +1292,3 @@
     </script>
 </body>
 </html>
-
-
-
-
-

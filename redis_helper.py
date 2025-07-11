@@ -12,7 +12,7 @@ REDIS_CONFIG = {
     'port': 6379,
     'db': 0,
     'decode_responses': True,
-    'max_connections': 10,  # 每个进程的最大连接数
+    'max_connections': 50,  # 增加到50个连接以支持400个并发客户端
     'socket_timeout': 5,    # 连接超时时间
     'socket_connect_timeout': 5,  # 建立连接超时时间
     'retry_on_timeout': True,     # 超时时重试
@@ -71,20 +71,18 @@ def get_all_exams():
     return [json.loads(exam_data) for exam_data in exams.values()]
 
 def get_exam_students(exam_id):
+    """获取指定考试的所有学生"""
     students = {}
     client = get_redis()
     keys = client.keys(f'exam:{exam_id}:student:*')
     for key in keys:
-        if key.endswith(b":screenshots") or key.endswith(b":logins"):
+        if key.endswith(":screenshots") or key.endswith(":logins"):
             continue
         student_data = client.hgetall(key)
         if student_data:
-            student_id = key.decode().split(':')[-1] if isinstance(key, bytes) else key.split(':')[-1]
-            # Redis返回的值可能是bytes，需要解码
-            student = {k.decode() if isinstance(k, bytes) else k: v.decode() if isinstance(v, bytes) else v for k, v in student_data.items()}
-            students[student_id] = student
+            student_id = key.split(':')[-1]
+            students[student_id] = student_data
     return students
-
 
 def get_violations():
     """获取所有违规记录"""
@@ -95,7 +93,6 @@ def get_violations():
         violations_data = client.lrange('violations', 0, -1)
         violations = [json.loads(v) for v in violations_data]
     return violations
-
 
 def create_exam(exam_data):
     """创建新考试"""
@@ -158,20 +155,6 @@ def update_exam_status():
 
     return updated_count
 
-def get_exam_students(exam_id):
-    """获取指定考试的所有学生"""
-    students = {}
-    client = get_redis()
-    keys = client.keys(f'exam:{exam_id}:student:*')
-    for key in keys:
-        if key.endswith(":screenshots") or key.endswith(":logins"):
-            continue
-        student_data = client.hgetall(key)
-        if student_data:
-            student_id = key.split(':')[-1]
-            students[student_id] = student_data
-    return students
-
 def find_student_in_exams(username):
     """查找学生所在的所有考试"""
     active_exams = []
@@ -207,17 +190,24 @@ def find_student_in_exams(username):
 
     return student_exams
 
-def get_exam_violations(exam_id):
-    """获取指定考试的所有违规记录"""
+def get_exam_violations(exam_id, page=1, per_page=12):
+    """获取指定考试的违规记录，支持分页"""
     client = get_redis()
-    violations = []
     violation_key = f'exam:{exam_id}:violations'
-    violation_count = client.llen(violation_key)
-    if violation_count > 0:
-        violations_data = client.lrange(violation_key, 0, -1)
-        violations = [json.loads(v) for v in violations_data]
-    return violations
-
+    
+    # 获取所有违规记录
+    violations_data = client.lrange(violation_key, 0, -1)
+    # 解析JSON并转换为列表
+    violations = [json.loads(v) for v in violations_data]
+    # 按时间戳倒序排序
+    violations.sort(key=lambda x: x['timestamp'], reverse=True)
+    
+    # 计算分页范围
+    start = (page - 1) * per_page
+    end = start + per_page
+    
+    # 返回指定范围的记录
+    return violations[start:end]
 
 def cleanup_redis():
     """清理Redis连接并保存数据"""

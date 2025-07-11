@@ -20,13 +20,11 @@ class ConfigManager:
 
         Args:
             config_file: 配置文件路径，如果为None则使用默认路径
-            server_url: 服务器URL，如果提供则优先从服务器获取配置
+            api_client: 获取配置接口
         """
-        if config_file is None:
+        if config_file:
             # 默认配置文件路径
             self.config_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
-        else:
-            self.config_file = config_file
 
         # 服务器URL
         self.api_client = api_client
@@ -114,15 +112,10 @@ class ConfigManager:
             },
             "only_monitor_foreground": True,  # 只监控前台窗口，忽略后台进程
 
-            # 服务器配置
-            #"server_url": "http://10.188.2.252:5000",  # 考试监控服务器URL
             "enable_server_reporting": True,  # 是否启用服务器报告功能
             "screenshot_on_violation": True,   # 是否在违规时截图
             "end_violation_foreground_process": False  # 是否结束违规前台进程
         }
-
-        # 加载配置
-        self.config = self.load_config()
 
         # 如果提供了服务器URL，尝试从服务器获取配置
         if self.api_client:
@@ -130,10 +123,13 @@ class ConfigManager:
             if server_config:
                 self.config = server_config
                 self.config_from_server = True
-                print(f"已从服务器 {self.server_url} 获取配置")
+                print(f"已从服务器 {self.api_client.server_url} 获取配置")
+                return
             else:
                 print(f"无法从服务器获取配置，使用本地配置")
-
+                # 加载配置
+        
+        self.config = self.load_config()
 
     def load_config(self):
         """
@@ -143,20 +139,12 @@ class ConfigManager:
             dict: 配置字典
         """
         # 如果配置文件不存在，创建默认配置文件
-        if not os.path.exists(self.config_file):
+        if not self.config_file or not os.path.exists(self.config_file):
             return self.default_config.copy()
 
         try:
             with open(self.config_file, 'r', encoding='utf-8') as f:
                 config = json.load(f)
-
-            # 检查是否需要更新配置（如果某些键不存在）
-            updated = False
-            for key, value in self.default_config.items():
-                if key not in config:
-                    config[key] = value
-                    updated = True
-
             return config
         except Exception as e:
             print(f"加载配置文件时出错: {str(e)}")
@@ -240,15 +228,6 @@ class ConfigManager:
         """
         return self.config.get("only_monitor_foreground", self.default_config["only_monitor_foreground"])
 
-    def get_server_url(self):
-        """
-        获取服务器URL
-
-        Returns:
-            str: 服务器URL
-        """
-        return self.config.get("server_url", self.default_config["server_url"])
-
     def is_server_reporting_enabled(self):
         """
         获取是否启用服务器报告
@@ -301,10 +280,10 @@ class ConfigManager:
         Returns:
             bool: 是否成功刷新
         """
-        if not self.server_url:
+        if not self.api_client:
             return False
 
-        server_config = self.fetch_config_from_server(self.server_url)
+        server_config = self.api_client.fetch_config()
         if server_config:
             self.config = server_config
             self.config_from_server = True
