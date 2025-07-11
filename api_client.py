@@ -7,33 +7,34 @@ import logging
 import os
 from typing import Dict, Any, Optional, Tuple, Union
 import time
+import shutil
 
 class ApiClient:
     """
     API客户端类，负责处理与服务器的所有通信
     """
 
-    def __init__(self, server_url):
+    def __init__(self, server_ip):
         """
         初始化API客户端
 
         Args:
             server_url: 服务器URL，如果为None则需要在调用方法时提供
         """
-        self.server_url = f'http://{server_url}:5000'
+        self.server_url = f'http://{server_ip}:5000'
         self.headers = {
             'Content-Type': 'application/json'
         }
         self.timeout = 5  # 默认超时时间（秒）
 
-    def set_server_url(self, server_url: str) -> None:
+    def set_server_url(self, server_ip: str) -> None:
         """
         设置服务器URL
 
         Args:
-            server_url: 服务器URL
+            server_ip: 服务器IP
         """
-        self.server_url =  f'http://{server_url}:5000'
+        self.server_url =  f'http://{server_ip}:5000'
 
     def login(self, username: str) -> Tuple[Optional[bool], Dict[str, Any], str]:
         """
@@ -41,7 +42,6 @@ class ApiClient:
 
         Args:
             username: 用户名
-            server_url: 服务器URL，如果为None则使用实例的server_url
 
         Returns:
             Tuple[Optional[bool], Dict[str, Any], str]:
@@ -73,17 +73,7 @@ class ApiClient:
                 #print("login:",status)
                 if status == "success":
                     # 保存考试和学生信息
-                    data = {
-                        "exam_id": login_response.get("exam_id"),
-                        "student_id": login_response.get("student_id"),
-                        "exam_name": login_response.get("exam_name"),
-                        "start_time": login_response.get("start_time"),
-                        "end_time": login_response.get("end_time"),
-                        "message": login_response.get("message", ""),
-                        "default_url": login_response.get("default_url", "about:blank"),
-                        "delay_min": login_response.get('delay_min', 0)
-                    }
-                    return True, data, ""
+                    return True, login_response, ""
                 elif status == "choice_required":
                     # 需要用户选择考试
                     data = {
@@ -336,7 +326,6 @@ class ApiClient:
         if not self.server_url:
             return False, None, "未指定服务器URL"
         try:
-            print(f"{self.server_url}/api/server_time")
             response = requests.get(
                 f"{self.server_url}/api/server_time",
                 timeout=self.timeout
@@ -379,12 +368,25 @@ class ApiClient:
                 if data.get("status") == "success" and "config" in data:
                     # 确保所有必要的配置项都存在
                     config = data["config"]
-                    for key, value in self.default_config.items():
-                        if key not in config:
-                            config[key] = value
                     return config
 
             return None
         except Exception as e:
             print(f"从服务器获取配置时出错: {str(e)}")
             return None
+        
+    def download_chromedriver(self, chrome_version):
+        """根据主版本号从服务器下载chromedriver，重命名为chromedriver.exe"""
+        major_version = chrome_version.split('.')[0]
+        download_url = f"{self.server_url}/chromedriver_{major_version}.exe"
+        local_path = os.path.join(os.path.dirname(__file__), "chromedriver.exe")
+        print(local_path)
+        print(f"尝试从 {download_url} 下载 chromedriver ...")
+        r = requests.get(download_url, stream=True)
+        if r.status_code == 200:
+            with open(local_path, "wb") as f:
+                shutil.copyfileobj(r.raw, f)
+            print("chromedriver 下载完成")
+            return local_path
+        else:
+            raise RuntimeError(f"下载chromedriver失败，服务器返回: {r.status_code}")

@@ -29,6 +29,7 @@ class ChromeController:
 
         Args:
             config_manager: 配置管理器实例
+            default_url: 默认URL
             disable_new_tabs: 是否禁用新标签页
         """
         self.config_manager = config_manager
@@ -44,9 +45,9 @@ class ChromeController:
         self.compiled_patterns = []
         self.allowed_urls = []
         if config_manager:
+            self.default_url = config_manager.get_default_url()
             patterns = config_manager.get_url_patterns()
             self.compiled_patterns = [re.compile(pattern) for pattern in patterns]
-
             self.allowed_urls = config_manager.get_allowed_urls() or []
             if self.default_url and self.default_url not in self.allowed_urls:
                 self.allowed_urls.append(self.default_url)
@@ -72,19 +73,12 @@ class ChromeController:
 
             # 如果找到了兼容的ChromeDriver，使用它
             if not driver_path:
-                driver_path = download_chromedriver_from_server(chrome_version, self.config_manager.server_url)
+                driver_path = self.config_manager.api_client.download_chromedriver(chrome_version)
             service = Service(driver_path)
             self.driver = webdriver.Chrome(service=service, options=options)
 
             # 导航到初始URL或空白页
             initial_url = url if url else self.default_url
-
-
-            # 如果配置管理器存在且未提供URL，使用默认URL
-            if not initial_url and self.config_manager:
-                default_url = self.config_manager.get_default_url()
-                if default_url:
-                    initial_url = default_url
             self.driver.get(initial_url)
             
 
@@ -200,17 +194,23 @@ class ChromeController:
         if not self.is_controlled(pid):
             return "未受控的Chrome浏览器，请切换到允许的浏览器进行考试"
         
+        handles = self.driver.window_handles
+        if self.disable_new_tabs and len(handles) > 1:
+            error_msg = f"检测到多个标签页，请关闭多余标签页"
+            print(error_msg)
+            # 处理多标签页情况
+            #self._handle_multiple_tabs_when_disabled()
+            return error_msg
+ 
         #print("比较：",self.window_title, "， ", window_title)
         
         #如果chrome的链接没有发生变化不检查
         if self.window_title == window_title:
             return None
+        
         title = window_title.split(" - G")[0]
-
         try:
-            # 获取所有标签页句柄
-            
-            handles = self.driver.window_handles
+            # 获取所有标签页句柄           
             current_handle = handles[0]
             for handle in handles:
                 self.driver.switch_to.window(handle)
@@ -222,19 +222,11 @@ class ChromeController:
                 #print(self.driver.title)
                 if title == self.driver.title:
                     current_handle = handle
-            self.driver.switch_to.window(current_handle)
-            
-            if self.disable_new_tabs and len(handles) > 1:
-                error_msg = f"检测到多个标签页，请关闭多余标签页"
-                print(error_msg)
-                # 处理多标签页情况
-                #self._handle_multiple_tabs_when_disabled()
-                return error_msg
+            self.driver.switch_to.window(current_handle)           
         except Exception as e:
             error_msg = f"获取标签页句柄时出错: {str(e)}"
-            print(error_msg)
+            #print(error_msg)
             return error_msg
-        
         self.window_title = window_title
         return None
 
@@ -291,5 +283,7 @@ class ChromeController:
         except Exception as e:
             print(f"重启Chrome浏览器时出错: {str(e)}")
             return "error"
+
+
 
 

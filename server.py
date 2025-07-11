@@ -169,13 +169,13 @@ def student_login():
             return jsonify({
                 "status": "success",
                 "message": f"成功重连到考试: {exam['name']}",
-                "exam_id": exam_id,
                 "student_id": student_id,
                 "exam_name": exam['name'],
                 "start_time": exam['start_time'],
                 "end_time": exam['end_time'],
                 "default_url": exam.get('default_url', "about:blank"),
-                'delay_min': exam.get('delay_min', 0) 
+                'delay_min': exam.get('delay_min', 0),
+                'disable_new_tabs': exam.get('disable_new_tabs', False)
             })
 
     # 如果没有提供考试ID或重连失败，则查找学生所在的考试
@@ -263,7 +263,8 @@ def student_login():
                 "start_time": exam['start_time'],
                 "end_time": exam['end_time'],
                 "default_url": exam.get('default_url', "about:blank"),
-                'delay_min': exam.get('delay_min', 0) 
+                'delay_min': exam.get('delay_min', 0),
+                'disable_new_tabs': exam.get('disable_new_tabs', False)
             })
         except redis.WatchError:
             return jsonify({"status": "error", "message": "登录冲突，请重试"}), 409
@@ -434,7 +435,7 @@ def manage_exams():
             start_time = request.form.get('start_time')
             end_time = request.form.get('end_time')
             default_url = request.form.get('default_url')
-            delay_min = request.form.get('delay_min')
+            delay_min = request.form.get('delay_min', '0')
 
             print(f"获取到的参数: name={name}, start_time={start_time}, end_time={end_time}, default_url={default_url}, delay_min={delay_min}")
 
@@ -462,11 +463,14 @@ def manage_exams():
             }
             if default_url:
                 exam_config['default_url'] = default_url
-            if delay_min:
-                try:
-                    exam_config['delay_min'] = int(delay_min)
-                except Exception:
-                    exam_config['delay_min'] = 0  # 默认1分钟
+            
+            exam_config['delay_min'] = int(delay_min)
+
+
+            # 处理禁止多标签页设置
+            disable_new_tabs = request.form.get('disable_new_tabs')
+            if disable_new_tabs and disable_new_tabs.lower() in ('true', 'on', '1'):
+                exam_config['disable_new_tabs'] = True
 
             # 存储考试配置
             client.hset(EXAM_CONFIG_KEY, exam_id, json.dumps(exam_config))
@@ -512,8 +516,14 @@ def get_exam_students_api(exam_id):
 
 @app.route('/api/exams/<int:exam_id>/violations')
 def get_exam_violations_api(exam_id):
-    """获取指定考试的违规记录"""
-    return jsonify(get_exam_violations(exam_id))
+    """获取指定考试的违规记录，支持分页"""
+    # 获取分页参数
+    page = request.args.get('page', 1, type=int)
+    per_page = request.args.get('per_page', 12, type=int)
+    
+    # 获取分页的违规记录
+    violations = get_exam_violations(exam_id, page, per_page)
+    return jsonify(violations)
 
 EXAM_CONFIG_KEY = "exam_configs"  # Redis中存储考试配置的key
 
@@ -594,11 +604,29 @@ def upload_screenshot():
 
 @app.route('/api/exams/<int:exam_id>/students/<student_id>/screenshots')
 def get_student_screenshots(exam_id, student_id):
-    """获取指定考生的所有截图文件URL"""
+    """获取指定考生的截图文件URL，支持分页"""
+    # 获取分页参数
+    page = request.args.get('page', 1, type=int)
+    per_page = request.args.get('per_page', 20, type=int)
+    
     client = get_redis()
     key = f"exam:{exam_id}:student:{student_id}:screenshots"
+    
+    # 获取所有截图
     files = client.lrange(key, 0, -1)
+    # 解码文件名
+    files = [fname.decode() if isinstance(fname, bytes) else fname for fname in files]
+    # 按时间戳倒序排序
+    files.sort(reverse=True)
+    
+    # 计算分页范围
+    start = (page - 1) * per_page
+    end = start + per_page
+    
+    # 获取指定范围的截图
+    files = files[start:end]
     urls = [f"/screenshots/{fname}" for fname in files]
+    
     return jsonify({"screenshots": urls})
 
 @app.route('/api/exams/<int:exam_id>/students/<student_id>/logins')
@@ -651,14 +679,101 @@ def import_students_to_exam(client, exam_id, file):
             imported_count += 1
     return imported_count
 
+def check_status():
+    """检查所有正在进行的考试状态和学生状态"""
+    client = get_redis()
+    now = datetime.now()
+    
+    # 获取所有考试
+    exams = get_all_exams()
+    
+    for exam in exams:
+        exam_id = exam['id']
+        exam_key = f'exam:{exam_id}'
+        
+        # 检查考试状态
+        try:
+            # 尝试解析时间，支持两种格式
+            try:
+                start_time = datetime.strptime(exam['start_time'], "%Y-%m-%d %H:%M:%S")
+            except ValueError:
+                start_time = datetime.strptime(exam['start_time'], "%Y-%m-%dT%H:%M")
+                
+            try:
+                end_time = datetime.strptime(exam['end_time'], "%Y-%m-%d %H:%M:%S")
+            except ValueError:
+                end_time = datetime.strptime(exam['end_time'], "%Y-%m-%dT%H:%M")
+            
+            # 更新考试状态
+            if now < start_time:
+                new_status = 'pending'
+            elif start_time <= now <= end_time:
+                new_status = 'active'
+            else:
+                new_status = 'completed'
+                
+            # 如果状态发生变化，更新考试状态
+            if exam['status'] != new_status:
+                client.hset(EXAM_CONFIG_KEY, exam_id, json.dumps({
+                    **exam,
+                    'status': new_status
+                }))
+                print(f"考试状态更新: {exam['name']} (ID: {exam_id}) {exam['status']} -> {new_status}")
+            
+            # 只检查正在进行的考试的学生状态
+            if new_status == 'active':
+                students = get_exam_students(exam_id)
+                
+                for student_id, student in students.items():
+                    # 跳过已经掉线或已结束考试的学生
+                    if student['status'] in ['offline', 'logout']:
+                        continue
+                        
+                    # 获取最后活跃时间
+                    last_active = student.get('last_active')
+                    if last_active:
+                        try:
+                            last_active_time = datetime.strptime(last_active, "%Y-%m-%d %H:%M:%S")
+                            # 如果超过30秒没有活跃，标记为掉线
+                            if (now - last_active_time).total_seconds() > 30:
+                                student_key = f'exam:{exam_id}:student:{student_id}'
+                                client.hset(student_key, 'status', 'offline')
+                                print(f"学生掉线: {student['username']} (ID: {student_id}, 考试: {exam_id})")
+                        except ValueError as e:
+                            print(f"解析学生最后活跃时间出错: {last_active}, 错误: {str(e)}")
+                            
+        except Exception as e:
+            print(f"处理考试 {exam_id} ({exam['name']}) 时出错: {str(e)}")
+            continue
+
+def start_status_checker():
+    """启动状态检查定时任务"""
+    def checker():
+        while True:
+            try:
+                check_status()
+            except Exception as e:
+                print(f"状态检查出错: {str(e)}")
+            time.sleep(10)  # 每10秒检查一次
+    
+    # 启动后台线程
+    thread = threading.Thread(target=checker, daemon=True)
+    thread.start()
+
 if __name__ == '__main__':
     try:
+        # 启动状态检查器
+        start_status_checker()
+        
         # 启动服务器
         print(f"进程 {os.getpid()}: 考试监控服务器启动在 http://0.0.0.0:5000/")
         app.run(host='0.0.0.0', port=5000, debug=True)
     except Exception as e:
         print(f"进程 {os.getpid()}: 服务器启动失败: {str(e)}")
         cleanup_redis()
+
+
+
 
 
 

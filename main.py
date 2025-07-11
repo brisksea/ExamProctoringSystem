@@ -13,16 +13,10 @@ import socket
 import hashlib
 import traceback
 from datetime import datetime, timezone
+from tkinter import messagebox
 import psutil
+import tkinter as tk
 
-try:
-    import tkinter as tk
-    from tkinter import messagebox
-except ImportError:
-    print("错误: tkinter 模块未找到，请确保Python安装包含tkinter库")
-    print("Windows用户: 请重新安装Python并确保选中'tcl/tk和IDLE'选项")
-    print("Linux用户: 请安装python3-tk包，例如: sudo apt-get install python3-tk")
-    sys.exit(1)
 
 from app_monitor import AppMonitor
 from chrome_controller import ChromeController
@@ -42,7 +36,7 @@ class LoginWindow:
         """
         self.root = root
         self.on_login_success = on_login_success
-        self.server_url = '10.188.2.252'
+        self.server_ip = '10.188.2.252'
 
         # 设置窗口属性
         self.root.title("考试监控系统 - 登录")
@@ -101,7 +95,7 @@ class LoginWindow:
             server_label.pack(side=tk.LEFT, padx=5)
 
             # 获取默认服务器地址
-            default_server = self.server_url
+            default_server = self.server_ip
 
             self.server_entry = tk.Entry(server_frame, width=25)
             self.server_entry.pack(side=tk.LEFT, padx=5, fill=tk.X, expand=True)
@@ -124,7 +118,6 @@ class LoginWindow:
             # 绑定回车键
             self.root.bind('<Return>', lambda _: self.login())
         except Exception as e:
-            import tkinter.messagebox as messagebox
             messagebox.showerror("界面初始化失败", f"错误信息: {e}")
             raise
 
@@ -147,7 +140,7 @@ class LoginWindow:
             if not match:
                 messagebox.showwarning("警告", "请输入有效的服务器IP地址")
                 return
-        
+
         # 创建API客户端
         self.api_client = ApiClient(server_ip)
 
@@ -182,7 +175,7 @@ class ExamClient:
         self.username = ""
 
         # 服务器连接配置
-        self.server_url = None  # 由登录界面提供
+        self.server_ip = None  # 由登录界面提供
         self.connected_to_server = False
         self.heartbeat_thread = None
 
@@ -190,6 +183,14 @@ class ExamClient:
         self.screenshot_thread = None
         self.screenshot_interval = self.get_screenshot_interval_from_config()
         self.screenshot_uploading = False
+
+        # 日志目录和文件初始化
+        self.log_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs")
+        if not os.path.exists(self.log_dir):
+            os.makedirs(self.log_dir)
+
+        # 默认日志文件名，登录后会更新
+        self.log_file = os.path.join(self.log_dir, f"client_{time.strftime('%Y-%m-%d')}.log")
 
         # 其他属性初始化将在登录成功后进行
 
@@ -224,11 +225,9 @@ class ExamClient:
         self.exam_name = login_data.get("exam_name") if login_data else None
         self.exam_start_time = login_data.get("start_time") if login_data else None
         self.exam_end_time = login_data.get("end_time") if login_data else None
-        self.exam_default_url = login_data.get("default_url") if login_data else None
-        if not self.exam_default_url:
-            self.exam_default_url  = "about:blank"
-        self.delay_min  = login_data.get("delay_min") if login_data else None
-
+        self.exam_default_url = login_data.get("default_url", "about:blank") if login_data else None
+        self.disable_new_tabs = login_data.get("disable_new_tabs", False) if login_data else False
+        self.delay_min = login_data.get("delay_min", 0) if login_data else 0
 
         # 检查关键信息
         if not self.exam_id or not self.student_id:
@@ -240,6 +239,13 @@ class ExamClient:
         if not self.student_id:
             user_info = f"{username}_{socket.gethostname()}_{uuid.getnode()}"
             self.student_id = hashlib.md5(user_info.encode()).hexdigest()
+
+        # 日志文件名格式: user_姓名_yyyy-mm-dd.log
+        log_date = time.strftime("%Y-%m-%d", time.localtime())
+        self.log_file = os.path.join(self.log_dir, f"user_{username}_{log_date}.log")
+
+        # 记录用户登录
+        self.write_log(f"用户 '{username}' 登录系统")
 
         # 显示主窗口
         self.root.deiconify()
@@ -253,15 +259,20 @@ class ExamClient:
         # 禁止用户调整窗口大小
         self.root.resizable(False, False)
 
+
         # 创建API客户端
         self.api_client = api_client
         # 创建配置管理器，传入服务器URL以从服务器获取配置
         self.config_manager = ConfigManager(api_client = self.api_client)
-        
+
+        # 创建界面
+        self.create_widgets()
+
+
         # 刷新截图间隔
         self.screenshot_interval = self.get_screenshot_interval_from_config()
 
-        if not self.exam_default_url and  self.config_manager:
+        if not self.exam_default_url and self.config_manager:
             self.exam_default_url = self.config_manager.get_default_url()
 
 
@@ -276,8 +287,20 @@ class ExamClient:
             self._exam_allowed_urls = self.config_manager.get_allowed_urls()
 
 
-        # 创建Chrome控制器
-        self.chrome_controller = ChromeController(self.config_manager, self.exam_default_url)
+        # 启动Chrome浏览器
+        try:
+            chrome_start_url = self.exam_default_url if self.exam_default_url else None
+            self.chrome_controller = ChromeController(
+                config_manager=self.config_manager,
+                default_url=chrome_start_url,
+                disable_new_tabs=self.disable_new_tabs
+            )
+            self.chrome_controller.start()
+            self.browser_status.set("已启动 (受控模式)")
+            self.log("Chrome浏览器已启动，插件已被禁用")
+        except Exception as e:
+            self.log(f"启动Chrome浏览器失败: {str(e)}")
+            messagebox.showerror("错误", f"启动Chrome浏览器失败: {str(e)}")
 
         # 创建应用监控器
         self.app_monitor = AppMonitor(self.config_manager, self.chrome_controller, self)
@@ -289,8 +312,6 @@ class ExamClient:
         self.last_warning_time = 0
         self.warning_cooldown = 10  # 异常检测后的冷却时间（秒）
 
-        # 创建界面
-        self.create_widgets()
 
         # 监控线程
         self.monitoring = False
@@ -300,10 +321,6 @@ class ExamClient:
         self.log_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs")
         if not os.path.exists(self.log_dir):
             os.makedirs(self.log_dir)
-
-        # 日志文件名格式: user_姓名_yyyy-mm-dd.log
-        log_date = time.strftime("%Y-%m-%d", time.localtime())
-        self.log_file = os.path.join(self.log_dir, f"user_{username}_{log_date}.log")
 
         # 记录用户登录
         self.write_log(f"用户 '{username}' 登录系统")
@@ -316,10 +333,12 @@ class ExamClient:
 
         # 初始化停止按钮状态
         self.stop_button_initialized = False
-        
+
         # 获取服务器时间并与本地时间比较
         check_time_sync(self.api_client, self.log)
 
+        # 启动考试结束时间检查
+        self.start_exam_end_time_check()
 
         # 登录成功后自动启动考试模式
         self.root.after(1000, self.start_monitoring)  # 延迟1秒启动，确保界面已完全加载
@@ -338,7 +357,7 @@ class ExamClient:
 
         while True:
             #print(f"[DEBUG][heartbeat_loop] before: connected_to_server={self.connected_to_server}, server_url={self.server_url}")
-            if self.server_url:
+            if self.api_client:
                 # print(f"[DEBUG][heartbeat_loop] send_heartbeat: success={success}, error_message={error_message}")
                 success, error_message = self.api_client.send_heartbeat(self.student_id, self.exam_id)
                 # print(f"[DEBUG][heartbeat_loop] after: connected_to_server={self.connected_to_server}")
@@ -351,31 +370,13 @@ class ExamClient:
                 pass
             # print(f"[DEBUG][heartbeat_loop] after: connected_to_server={self.connected_to_server}")
 
-            '''
-            # 定期检查Chrome浏览器状态
-            check_count += 1
-            if self.monitoring and check_count >= chrome_check_interval:
-                check_count = 0
-                # 检查Chrome是否正在运行，如果不是且监控已启动，则尝试重启
-                if not self.chrome_controller.is_running() and hasattr(self, 'browser_status'):
-                    # print("心跳检查发现Chrome浏览器已关闭，尝试重启...")
-
-                    # 尝试重启Chrome (后台不通知用户)
-                    if self.chrome_controller.check_and_restart_if_needed():
-                        # print("心跳检查: Chrome浏览器已成功重启")
-                        self.root.after(0, lambda: self.browser_status.set("已启动 (受控模式)"))
-                    else:
-                        # print("心跳检查: Chrome浏览器重启失败")
-                        pass
-            '''
-
             # 30秒发送一次心跳
             time.sleep(30)
 
     def send_logout(self):
         """向服务器发送登出信息"""
         # print(self.student_id, self.exam_id, self.server_url)
-        if self.student_id and self.exam_id and self.server_url:
+        if self.student_id and self.exam_id:
             # 使用API客户端发送登出请求
             success, error_message = self.api_client.send_logout(self.student_id, self.exam_id)
 
@@ -623,10 +624,35 @@ class ExamClient:
         """
         try:
             timestamp = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
+
+            # 确保日志目录存在
+            if not hasattr(self, 'log_dir') or not self.log_dir:
+                self.log_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs")
+                if not os.path.exists(self.log_dir):
+                    os.makedirs(self.log_dir)
+
+            # 确保日志文件名存在
+            if not hasattr(self, 'log_file') or not self.log_file:
+                # 如果有用户名，使用用户名创建日志文件
+                if hasattr(self, 'username') and self.username:
+                    log_date = time.strftime("%Y-%m-%d", time.localtime())
+                    self.log_file = os.path.join(self.log_dir, f"user_{self.username}_{log_date}.log")
+                else:
+                    # 否则使用默认名称
+                    self.log_file = os.path.join(self.log_dir, f"client_{time.strftime('%Y-%m-%d')}.log")
+
+            # 写入日志
             with open(self.log_file, "a", encoding="utf-8") as f:
                 f.write(f"[{timestamp}] {message}\n")
         except Exception as e:
             print(f"写入日志失败: {str(e)}")
+            # 尝试写入备用日志文件
+            try:
+                backup_log = os.path.join(os.path.dirname(os.path.abspath(__file__)), "error.log")
+                with open(backup_log, "a", encoding="utf-8") as f:
+                    f.write(f"[{timestamp}] 原始日志写入失败: {str(e)}, 原始消息: {message}\n")
+            except:
+                pass  # 如果备用日志也失败，只能忽略
 
     def start_monitoring(self):
         """启动考试模式"""
@@ -642,16 +668,6 @@ class ExamClient:
 
         # 记录用户启动监控
         self.log(f"考试监控已自动启动")
-
-        # 启动Chrome浏览器
-        try:
-            chrome_start_url = self.exam_default_url if self.exam_default_url else None
-            self.chrome_controller.start()
-            self.browser_status.set("已启动 (受控模式)")
-            self.log("Chrome浏览器已启动，插件已被禁用")
-        except Exception as e:
-            self.log(f"启动Chrome浏览器失败: {str(e)}")
-            messagebox.showerror("错误", f"启动Chrome浏览器失败: {str(e)}")
 
         # 启动监控线程
         self.monitor_thread = threading.Thread(target=self.monitor_apps)
@@ -688,12 +704,12 @@ class ExamClient:
     def monitor_apps(self):
         """统一的应用程序监控线程"""
         # 从配置中获取检查间隔
-        check_interval = self.config_manager.config.get("check_interval", 10)  # 默认5秒
+        check_interval = self.config_manager.config.get("check_interval", 10)  # 默认10秒
         print(f"应用检查间隔: {check_interval}秒")
         if self.delay_min:
             delay_min = self.delay_min
         else:
-            delay_min = self.delay_min
+            delay_min = 0
         print(f"检测延时：{delay_min}分")
         pass_second = 0
 
@@ -720,15 +736,14 @@ class ExamClient:
                         # 捕获屏幕截图
                         screenshot_path = self.capture_screenshot()
 
-                        # 显示警告
-                        self.show_warning("警告", err_msg)
-
                         # 发送违规报告
                         violation_reason = err_msg
                         self.report_violation(violation_reason, screenshot_path)
-
                         # 记录到日志
-                        self.log(f"警告：{err_msg}")   
+                        self.log(f"警告：{err_msg}")
+
+                         # 显示警告
+                        self.show_warning("警告", err_msg, 5)
 
                         if "未授权的URL" in err_msg:
                             self.chrome_controller.to_default_url()
@@ -743,9 +758,12 @@ class ExamClient:
                                     print(f"已结束未授权前台进程: {process_name} (PID: {foreground_process})")
                                 except Exception as e:
                                     print(f"结束未授权前台进程时出错: {str(e)}")
-
-                    
-
+                        elif "获取标签页句柄时出错" in err_msg:
+                            self.show_warning("警告", "获取标签页句柄时出错，浏览器将重新启动", 5)
+                            self.driver.quit()
+                            self.chrome_controller.start()
+                            
+                            
                 except Exception as e:
                     # print(f"监控过程出错: {str(e)}")
                     traceback.print_exc()  # 添加这行来打印详细的错误信息
@@ -753,7 +771,7 @@ class ExamClient:
             pass_second += check_interval
             status = self.chrome_controller.check_and_restart_if_needed()
             if status == 'restart':
-                pass_second = 0  
+                pass_second = 0
             time.sleep(check_interval)
 
     def capture_screenshot(self):
@@ -887,7 +905,6 @@ class ExamClient:
 
     def update_server_status(self):
         """更新服务器状态显示"""
-        # print(f"[DEBUG] connected_to_server={self.connected_to_server}, server_url={self.server_url}")
         if self.connected_to_server:
             config_source = "服务器" if self.config_manager.is_config_from_server() else "本地"
             self.server_status_var.set(f"服务器: 已连接 ({self.api_client.server_url}))")
@@ -898,7 +915,7 @@ class ExamClient:
         # 2秒后再次更新
         self.root.after(2000, self.update_server_status)
 
-    def show_warning(self, title, message):
+    def show_warning(self, title, message, seconds=5):
         """
         显示始终在最前端的警告对话框
 
@@ -962,7 +979,8 @@ class ExamClient:
 
         # 用户点击确认
         def on_confirm():
-            warning_window.destroy()
+            if warning_window.winfo_exists():
+                warning_window.destroy()
 
         # 自定义按钮样式类
         class HoverButton(tk.Button):
@@ -1013,6 +1031,23 @@ class ExamClient:
         x = (warning_window.winfo_screenwidth() // 2) - (warning_window.winfo_width() // 2)
         y = (warning_window.winfo_screenheight() // 2) - (warning_window.winfo_height() // 2)
         warning_window.geometry(f"+{x}+{y}")
+
+        # 添加倒计时标签
+        countdown_var = tk.StringVar(value="5")
+        countdown_label = tk.Label(button_frame, textvariable=countdown_var,
+                                  font=("Arial", 9), fg="#888888", background="#FFF0F0")
+        countdown_label.pack(pady=(5, 0))
+
+        # 倒计时函数
+        def countdown(count):
+            if count > 0 and warning_window.winfo_exists():
+                countdown_var.set(str(count))
+                warning_window.after(1000, countdown, count-1)
+            elif warning_window.winfo_exists():
+                on_confirm()
+
+        # 启动倒计时
+        warning_window.after(0, countdown, seconds)
 
         # 等待窗口关闭
         self.root.wait_window(warning_window)
@@ -1161,7 +1196,7 @@ class ExamClient:
 
     def screenshot_loop(self):
         """定时上传屏幕截图到服务器"""
-        while self.screenshot_uploading and self.connected_to_server:
+        while self.screenshot_uploading:
             try:
                 screenshot = self.take_screenshot()
                 timestamp = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
@@ -1173,12 +1208,93 @@ class ExamClient:
                     timestamp=timestamp
                 )
                 if success:
+                    self.connected_to_server = True
                     self.log("已自动上传屏幕截图")
                 else:
                     self.log(f"自动上传截图失败: {error_message}")
+                    self.connected_to_server = False
             except Exception as e:
                 self.log(f"截图上传线程异常: {str(e)}")
             time.sleep(self.screenshot_interval)
+
+    def start_exam_end_time_check(self):
+        """启动考试结束时间检查"""
+        if not self.exam_end_time:
+            self.log("未设置考试结束时间，无法自动结束考试")
+            return
+
+        try:
+            # 解析考试结束时间
+            end_time = datetime.fromisoformat(self.exam_end_time)
+
+            # 计算当前时间到考试结束时间的毫秒数
+            now = datetime.now()
+            time_diff = (end_time - now).total_seconds() * 1000
+            print(f"考试结束时间: {end_time}: now : {now}")
+            print(f"当前时间到考试结束时间的毫秒数: {time_diff}")
+
+            if time_diff <= 0:
+                # 考试已经结束
+                self.log("考试已结束，系统将自动退出")
+                self.root.after(1000, self.auto_end_exam)
+            else:
+                # 设置定时器，在考试结束时自动退出
+                self.log(f"系统将在考试结束时间 {end_time.strftime('%Y-%m-%d %H:%M:%S')} 自动退出")
+                self.root.after(int(time_diff), self.auto_end_exam)
+
+                # 设置提前5分钟的提醒
+                pre_min = 5
+                if time_diff > pre_min * 60 * 1000:
+                    self.root.after(int(time_diff - pre_min * 60 * 1000), 
+                                    lambda: self.show_warning("考试即将结束", "注意：考试将在5分钟后结束，请及时保存您的工作。系统将在考试结束时自动关闭。", 5)
+                      ) 
+
+        except Exception as e:
+            self.log(f"设置考试结束自动退出时出错: {str(e)}")
+            print(f"设置考试结束自动退出时出错: {str(e)}")
+            traceback.print_exc()
+
+    def auto_end_exam(self):
+        """考试结束时自动退出"""
+        try:
+            # 记录日志
+            self.log("考试时间已到，系统自动退出")
+
+            # 显示考试结束消息（自定义对话框，10秒后自动关闭）
+            self.show_warning(
+                "考试已结束",
+                "考试时间已到，系统将自动关闭。\n\n感谢您的参与！",
+                10  # 10秒后自动关闭
+            )
+
+            # 停止监控
+            if self.monitoring:
+                self.stop_monitoring()
+
+            # 发送登出信息
+            self.send_logout()
+
+            # 记录用户退出
+            self.write_log(f"用户 '{self.username}' 考试时间到，系统自动退出")
+
+            # 销毁窗口
+            self.root.destroy()
+
+            # 确保程序完全退出
+            import sys
+            sys.exit(0)
+        except Exception as e:
+            self.log(f"自动结束考试时出错: {str(e)}")
+            print(f"自动结束考试时出错: {str(e)}")
+            traceback.print_exc()
+
+            # 尝试强制退出
+            try:
+                self.root.destroy()
+                import sys
+                sys.exit(0)
+            except:
+                pass
 
 def check_time_sync(api_client, log_func):
     """检测本地时间与服务器时间差异，超2分钟弹窗警告"""
@@ -1207,10 +1323,6 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-
-
-
 
 
 

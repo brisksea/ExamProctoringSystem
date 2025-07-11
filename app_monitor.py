@@ -38,7 +38,7 @@ class AppMonitor:
         print(f"当前打开文件: {filepath}，创建日期: {ctime_str}") 
         exam_start_time_dt = datetime.fromisoformat(self.exam_client.exam_start_time)
         if ctime < exam_start_time_dt.timestamp():
-            warn_msg = f"当前打开文件: {filepath} 的创建日期({ctime_str})早于考试开始时间({exam_start_time_dt.strftime('%Y-%m-%d %H:%M:%S')})，请注意是否为考试前准备的代码文件"
+            warn_msg = f"当前打开文件: {filepath} 的创建日期({ctime_str})早于考试开始时间({exam_start_time_dt.strftime('%Y-%m-%d %H:%M:%S')})，请注意关闭该代码文件"
             return warn_msg
 
     def islater(self, filepath):
