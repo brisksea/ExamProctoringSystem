@@ -22,15 +22,17 @@ class ConfigManager:
             config_file: 配置文件路径，如果为None则使用默认路径
             api_client: 获取配置接口
         """
-        if config_file:
-            # 默认配置文件路径
-            self.config_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
-
-        # 服务器URL
-        self.api_client = api_client
-
-        # 配置来源标志
-        self.config_from_server = False
+        if api_client:
+            self.api_client = api_client
+            self.config_from_server = True
+        else:
+            if config_file:
+                self.config_file = config_file
+            else:
+                # 默认配置文件路径
+                self.config_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
+            self.config_from_server = False
+       
 
         # 默认配置
         self.default_config = {
@@ -114,7 +116,8 @@ class ConfigManager:
 
             "enable_server_reporting": True,  # 是否启用服务器报告功能
             "screenshot_on_violation": True,   # 是否在违规时截图
-            "end_violation_foreground_process": False  # 是否结束违规前台进程
+            "end_violation_foreground_process": False,  # 是否结束违规前台进程
+            "show_violation_warning": True  # 是否显示违纪警告窗口
         }
 
         # 如果提供了服务器URL，尝试从服务器获取配置
@@ -296,3 +299,7 @@ class ConfigManager:
     def is_end_violation_foreground_process_enabled(self):
         """是否结束违规前台进程"""
         return self.config.get("end_violation_foreground_process", False)
+    
+    def is_show_violation_warning_enabled(self):
+        """是否显示违纪警告窗口"""
+        return self.config.get("show_violation_warning", True)

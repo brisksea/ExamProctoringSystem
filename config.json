@@ -9,7 +9,8 @@
         {"exe": "mspaint.exe", "name": "画图"},
         {"exe": "evcapture.exe", "name": "录屏"},
         {"exe": "ConsolePauser.exe", "name": "Dev-C++"},
-        {"exe": "code.exe", "name": "vscode"}
+        {"exe": "code.exe", "name": "vscode"},
+        {"exe": "putty.exe", "name": "putty"}
 
     ],
     "allowed_executables": [
@@ -33,9 +34,36 @@
         "disable_printing": false,
         "disable_new_tabs": false
     },
-    "only_monitor_foreground": true,
     "server_url": "http://10.188.2.252:5000",
     "enable_server_reporting": true,
     "screenshot_on_violation": true,
-    "end_violation_foreground_process": false
+    "end_violation_foreground_process": false,
+    "show_violation_warning": false,
+    "enable_screen_recording": true,    
+    "enable_screenshot_upload": false,
+    "screen_recording": {
+        "recording": {
+            "enabled": true,
+            "fps": 2,
+            "quality": 2,
+            "interval": 60,
+            "codec":"mp4",
+            "scale_ratio": 0.8
+        },
+        "upload": {
+            "strategy": "distributed",
+            "interval": 60,
+            "max_delay": 60,
+            "batch_size": 5,
+            "retry_count": 3,
+            "timeout": 60
+        }
+    },
+    "mysql": {
+        "host": "localhost",
+        "port": 3306,
+        "user": "debian-sys-maint",
+        "password": "bGEtT3EfFKGLhYRS",
+        "database": "monitoring"
+    }
 }

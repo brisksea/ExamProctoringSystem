@@ -42,12 +42,21 @@ class AppMonitor:
             return warn_msg
 
     def islater(self, filepath):
-        ctime = os.path.getctime(filepath)
-        mtime = os.path.getmtime(filepath)
-        mtime_str = datetime.fromtimestamp(mtime).strftime("%Y-%m-%d %H:%M:%S")
-        print(f"当前打开文件: {filepath}，修改日期: {mtime_str}")
-        exam_start_time_dt = datetime.fromisoformat(self.exam_client.exam_start_time)
-        if mtime > exam_start_time_dt.timestamp(): return None
+        try:
+            ctime = os.path.getctime(filepath)
+            mtime = os.path.getmtime(filepath)
+            mtime_str = datetime.fromtimestamp(mtime).strftime("%Y-%m-%d %H:%M:%S")
+            print(f"当前打开文件: {filepath}，修改日期: {mtime_str}")
+            # 若考试开始时间不可用，则不放行
+            if not getattr(self.exam_client, 'exam_start_time', None):
+                return False
+            exam_start_time_dt = datetime.fromisoformat(self.exam_client.exam_start_time)
+            exam_start_ts = exam_start_time_dt.timestamp()
+            # 创建或修改时间 任意一项 晚于考试开始时间，则允许放行
+            return (ctime > exam_start_ts) or (mtime > exam_start_ts)
+        except Exception as e:
+            print(f"判断文件时间时出错: {filepath}, 错误: {e}")
+            return False
 
     def check_devcpp(self, window_title):
         # 通常Dev-C++窗口标题格式为 "xxx.cpp - Dev-C++"

@@ -12,265 +12,246 @@ import time
 import signal
 import atexit
 import threading
-import redis
 from datetime import datetime, timedelta
-from redis_helper import get_redis, get_all_exams, get_exam, get_violations, cleanup_redis, \
-    get_exam_students, update_exam_status, configure_redis_persistence, find_student_in_exams, get_exam_violations
-from flask import Flask, request, render_template, jsonify, send_from_directory, send_file
-
-# 创建Flask应用
-app = Flask(__name__)
+from flask import Flask, request, render_template, jsonify, send_from_directory, send_file, current_app
+from data_access import DataAccess
+from merge_manager import MergeManager
 
 # 数据存储目录
 DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "server_data")
-SCREENSHOTS_DIR = os.path.join(DATA_DIR, "screenshots")
 CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
 
 # 确保目录存在
 if not os.path.exists(DATA_DIR):
     os.makedirs(DATA_DIR)
-if not os.path.exists(SCREENSHOTS_DIR):
-    os.makedirs(SCREENSHOTS_DIR)
 
-def signal_handler(signum, frame):
-    """信号处理函数"""
-    print(f"\n进程 {os.getpid()}: 接收到信号 {signum}")
-    cleanup_redis()
-    os._exit(0)
 
-# 注册信号处理器
-signal.signal(signal.SIGINT, signal_handler)   # Ctrl+C
-signal.signal(signal.SIGTERM, signal_handler)  # 终止信号
+# 创建Flask应用
+def create_app():
+    app = Flask(__name__)
+    app.data_access = DataAccess()
+    app.merge_manager = MergeManager()
+    return app
 
-# 注册退出处理函数
-atexit.register(cleanup_redis)
-
+app = create_app()
 
 @app.route('/')
 def index():
-    """主页，显示考试列表"""
     return render_template('index.html')
 
-@app.route('/api/students')
-def get_students():
-    """获取所有学生信息"""
-    all_students = []
-
-    # 获取所有考试
-    exams = get_all_exams()
-
-    # 获取每个考试的学生
-    for exam in exams:
-        exam_id = exam['id']
-        students = get_exam_students(exam_id)
-
-        for student_id, student in students.items():
-            # 添加考试信息
-            student['exam_name'] = exam['name']
-            all_students.append(student)
-
-    return jsonify(all_students)
+@app.route('/student_management')
+def student_management():
+    return render_template('student_management.html')
 
 @app.route('/api/students/import', methods=['POST'])
 def import_students():
-    """导入学生名单"""
-    if 'student_list' not in request.files:
-        return jsonify({"status": "error", "message": "未找到文件"}), 400
-
-    file = request.files['student_list']
+    """导入学生到指定考试，支持文本输入和文件上传两种方式"""
     exam_id = request.form.get('exam_id')
+    import_type = request.form.get('import_type', 'file')  # 默认为文件方式
 
-    if not file or not exam_id:
-        return jsonify({"status": "error", "message": "参数不完整"}), 400
+    if not exam_id:
+        return jsonify({"status": "error", "message": "缺少考试ID"}), 400
 
     try:
-        # 获取Redis连接
-        client = get_redis()
+        students = []
 
-        # 导入学生名单
-        imported_count = import_students_to_exam(client, exam_id, file)
+        if import_type == 'text':
+            # 文本输入方式
+            student_list_text = request.form.get('student_list_text', '').strip()
+            if not student_list_text:
+                return jsonify({"status": "error", "message": "学生名单不能为空"}), 400
+
+            # 解析文本，格式：学号 姓名
+            for line in student_list_text.splitlines():
+                parts = line.strip().split()
+                if len(parts) >= 2:
+                    student_id, student_name = parts[0], ' '.join(parts[1:])
+                    students.append({'student_id': student_id, 'student_name': student_name})
+                elif len(parts) == 1:
+                    # 只有姓名，自动生成学号
+                    student_name = parts[0]
+                    students.append({'student_id': None, 'student_name': student_name})
+
+        elif import_type == 'file':
+            # 文件上传方式
+            if 'student_list_file' not in request.files:
+                return jsonify({"status": "error", "message": "未找到文件"}), 400
+
+            file = request.files['student_list_file']
+            if not file:
+                return jsonify({"status": "error", "message": "文件不能为空"}), 400
+
+            # 读取文件内容
+            file_content = file.read().decode('utf-8').strip()
+            if not file_content:
+                return jsonify({"status": "error", "message": "文件内容为空"}), 400
+
+            # 解析文件内容，格式：学号 姓名
+            for line in file_content.splitlines():
+                parts = line.strip().split()
+                if len(parts) >= 2:
+                    student_id, student_name = parts[0], ' '.join(parts[1:])
+                    students.append({'student_id': student_id, 'student_name': student_name})
+                elif len(parts) == 1:
+                    # 只有姓名，自动生成学号
+                    student_name = parts[0]
+                    students.append({'student_id': None, 'student_name': student_name})
+
+        else:
+            return jsonify({"status": "error", "message": "不支持的导入类型"}), 400
+
+        if not students:
+            return jsonify({"status": "error", "message": "没有找到有效的学生数据"}), 400
+
+        # 导入学生到考试
+        imported_count = import_students_to_exam(exam_id, students)
 
         return jsonify({
             "status": "success",
             "message": f"成功导入 {imported_count} 名学生",
-            "imported_count": imported_count
+            "imported_count": imported_count,
+            "total_parsed": len(students)
         })
 
     except Exception as e:
         print(f"导入学生失败: {str(e)}")
-        return jsonify({
-            "status": "error",
-            "message": f"导入失败：{str(e)}"
-        }), 500
+        return jsonify({"status": "error", "message": f"导入失败：{str(e)}"}), 500
 
-@app.route('/api/violations')
-def get_violations_api():
-    """获取所有异常记录"""
-    return jsonify(get_violations())
 
-@app.route('/api/login', methods=['POST'])
-def student_login():
-    """学生登录"""
+@app.route('/api/students', methods=['GET'])
+def get_all_students():
+    """获取所有学生列表"""
+    try:
+        students = current_app.data_access.get_all_students_from_table()
+        return jsonify({"status": "success", "students": students})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@app.route('/api/students/batch', methods=['POST'])
+def batch_create_students():
+    """批量创建学生"""
     if not request.is_json:
         return jsonify({"status": "error", "message": "Invalid request format"}), 400
 
-    client = get_redis()
     data = request.json
-    username = data.get('username')
-    ip = request.remote_addr
-    exam_id = data.get('exam_id')  # 可选：考试ID
-    student_id = data.get('id')    # 可选：学生ID（用于重连）
+    students = data.get('students', [])
 
-    if not username:
-        return jsonify({"status": "error", "message": "Missing username"}), 400
+    if not students:
+        return jsonify({"status": "error", "message": "Missing students data"}), 400
 
-    # 更新所有考试状态
-    update_exam_status()
+    try:
+        created_students = []
+        errors = []
 
-    # 如果提供了学生ID，尝试直接重连
-    if student_id:
-        # 查找该学生ID是否存在于任何考试中
-        found = False
-        exams = get_all_exams()
-        for exam in exams:
-            exam_id_check = exam['id']
-            student_key = f'exam:{exam_id_check}:student:{student_id}'
-            if client.exists(student_key):
-                # 验证用户名是否匹配
-                stored_username = client.hget(student_key, 'username')
-                if stored_username and stored_username == username:
-                    found = True
-                    exam_id = exam_id_check
-                    break
+        for student_data in students:
+            student_name = student_data.get('student_name')
+            student_id = student_data.get('student_id')
 
-        if found:
-            # 更新学生状态
-            student_key = f'exam:{exam_id}:student:{student_id}'
-            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            student_data = {
-                'ip': ip,
-                'last_active': timestamp,
-                'status': 'online'
-            }
-            client.hmset(student_key, student_data)
+            if not student_name or student_id:
+                errors.append(f"学生姓名不能为空: {student_data}")
+                continue
 
-            # 获取考试信息
-            exam = get_exam(exam_id)
-            print(f"进程 {os.getpid()}: 学生重连: {username} (ID: {student_id}) 考试: {exam_id} ({exam['name']}) IP: {ip}")
+            try:
+                created_id = current_app.data_access.create_student(student_name, student_id)
+                created_students.append({
+                    "student_id": created_id,
+                    "student_name": student_name
+                })
+            except Exception as e:
+                errors.append(f"创建学生 {student_name} 失败: {str(e)}")
 
-            # 登录时记录
-            login_record = {
-                "type": "login",
-                "timestamp": timestamp,
-                "ip": ip
-            }
-            client.rpush(f"exam:{exam_id}:student:{student_id}:logins", json.dumps(login_record))
+        return jsonify({
+            "status": "success",
+            "message": f"批量创建完成，成功: {len(created_students)}, 失败: {len(errors)}",
+            "created_students": created_students,
+            "errors": errors
+        })
+    except Exception as e:
+        return jsonify({"status": "error", "message": f"批量创建失败: {str(e)}"}), 500
 
+@app.route('/api/students/<student_id>', methods=['GET'])
+def get_student_by_id(student_id):
+    """根据学号获取学生信息"""
+    try:
+
+        # 通过get_student_name_by_id方法查找（包含兼容性处理）
+        student_name = current_app.data_access.get_student_name_by_id(student_id)
+        if student_name:
             return jsonify({
                 "status": "success",
-                "message": f"成功重连到考试: {exam['name']}",
                 "student_id": student_id,
-                "exam_name": exam['name'],
-                "start_time": exam['start_time'],
-                "end_time": exam['end_time'],
-                "default_url": exam.get('default_url', "about:blank"),
-                'delay_min': exam.get('delay_min', 0),
-                'disable_new_tabs': exam.get('disable_new_tabs', False)
+                "student_name": student_name
             })
-
-    # 如果没有提供考试ID或重连失败，则查找学生所在的考试
-    if not exam_id:
-        student_exams = find_student_in_exams(username)
-
-        if not student_exams:
+        else:
             return jsonify({
                 "status": "error",
-                "message": "未找到您参加的考试，或考试尚未开始"
+                "message": "未找到该学号对应的学生"
             }), 404
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
 
-        # 如果找到多个考试，返回考试列表供选择
-        if len(student_exams) > 1:
-            return jsonify({
-                "status": "choice_required",
-                "message": "您有多个正在进行的考试，请选择一个",
-                "exams": student_exams
-            })
+@app.route('/api/login', methods=['POST'])
+def login():
+    """使用学号和姓名进行登录"""
+    if not request.is_json:
+        return jsonify({"status": "error", "message": "Invalid request format"}), 400
 
-        # 如果只找到一个考试，自动选择
-        exam_id = student_exams[0]['exam_id']
-        student_id = student_exams[0]['student_id']
-    else:
-        # 验证考试是否存在且在进行中
-        exam = get_exam(exam_id)
+    data = request.json
+    student_id = data.get('student_id')
+    student_name = data.get('student_name')
+    ip = request.remote_addr
+
+    if not student_id or not student_name:
+        return jsonify({"status": "error", "message": "Missing student_id or student_name"}), 400
+
+    current_app.data_access.refresh_exam_status()
+    try:
+        # 通过SQL查询获取学生参加的正在进行的考试
+        exam = current_app.data_access.get_student_active_exams(student_id)
+
         if not exam:
-            return jsonify({"status": "error", "message": "考试不存在"}), 404
+            return jsonify({
+                "status": "error",
+                "message": "当前没有进行中的考试，请联系管理员"
+            }), 400
 
-        if exam['status'] != 'active':
-            return jsonify({"status": "error", "message": "考试尚未开始或已结束"}), 403
+        exam_id = exam['id']
 
-        # 在考试中查找学生
-        students = get_exam_students(exam_id)
-        student_id = None
+        # 处理学生登录
+        result = current_app.data_access.handle_student_login(student_name, exam_id, student_id, ip)
 
-        for sid, student in students.items():
-            if student['username'] == username:
-                student_id = sid
-                break
+        if result.get('status') == 'success':
+            # 为学生创建专用的截图目录
+            student_screenshot_dir = os.path.join(DATA_DIR, str(exam_id), "screenshots", str(student_id))
+            if not os.path.exists(student_screenshot_dir):
+                os.makedirs(student_screenshot_dir)
 
-        if not student_id:
-            return jsonify({"status": "error", "message": "您不在此考试的学生名单中"}), 403
+            # 为学生创建专用的录屏目录
+            student_recording_dir = os.path.join(DATA_DIR, str(exam_id), "recordings", str(student_id))
+            if not os.path.exists(student_recording_dir):
+                os.makedirs(student_recording_dir)
 
-    # 使用Redis事务确保原子性
-    with client.pipeline() as pipe:
-        try:
-            student_key = f'exam:{exam_id}:student:{student_id}'
-            pipe.watch(student_key)
-
-            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            student_data = {
-                'id': student_id,
-                'username': username,
-                'ip': ip,
-                'exam_id': exam_id,
-                'login_time': timestamp,
-                'last_active': timestamp,
-                'status': 'online'
-            }
-
-            pipe.multi()
-            pipe.hmset(student_key, student_data)
-            pipe.execute()
-
-            # 获取考试信息
-            exam = get_exam(exam_id)
-
-            print(f"进程 {os.getpid()}: 学生登录: {username} (ID: {student_id}) 考试: {exam_id} ({exam['name']}) IP: {ip}")
-
-            # 登录时记录
-            login_record = {
-                "type": "login",
-                "timestamp": timestamp,
-                "ip": ip
-            }
-            client.rpush(f"exam:{exam_id}:student:{student_id}:logins", json.dumps(login_record))
-
+            # 返回完整的考试和学生信息
             return jsonify({
                 "status": "success",
-                "message": f"成功登录考试: {exam['name']}",
+                "message": "登录成功",
                 "exam_id": exam_id,
                 "student_id": student_id,
-                "exam_name": exam['name'],
-                "start_time": exam['start_time'],
-                "end_time": exam['end_time'],
-                "default_url": exam.get('default_url', "about:blank"),
-                'delay_min': exam.get('delay_min', 0),
-                'disable_new_tabs': exam.get('disable_new_tabs', False)
+                "exam_name": exam.get('name'),
+                "start_time": exam.get('start_time'),
+                "end_time": exam.get('end_time'),
+                "default_url": exam.get('default_url'),
+                "delay_min": exam.get('delay_min', 0),
+                "disable_new_tabs": exam.get('disable_new_tabs', False)
             })
-        except redis.WatchError:
-            return jsonify({"status": "error", "message": "登录冲突，请重试"}), 409
-        except Exception as e:
-            print(f"学生登录失败: {str(e)}")
-            return jsonify({"status": "error", "message": f"登录失败: {str(e)}"}), 500
+        else:
+            return jsonify(result), 400
+    except Exception as e:
+        return jsonify({
+            "status": "error",
+            "message": f"登录处理失败: {str(e)}"
+        }), 500
 
 @app.route('/api/heartbeat', methods=['POST'])
 def heartbeat():
@@ -285,21 +266,27 @@ def heartbeat():
     if not student_id or not exam_id:
         return jsonify({"status": "error", "message": "Missing student_id or exam_id"}), 400
 
-    client = get_redis()  # 获取Redis连接
-
     # 检查学生是否存在
     student_key = f'exam:{exam_id}:student:{student_id}'
-    if not client.exists(student_key):
+    if not current_app.data_access.exists(student_key):
         return jsonify({"status": "error", "message": "Unknown student or exam"}), 404
 
     # 更新最后活跃时间
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    client.hset(student_key, 'last_active', timestamp)
+    current_app.data_access.update_last_active(student_id, exam_id, timestamp)
 
-    # 如果学生状态不是online，则更新为online
-    student_status = client.hget(student_key, 'status')
+    # 如果学生状态不是online，则更新为online并记录上线历史
+    student_status = current_app.data_access.get_student_status(student_id, exam_id)
     if student_status != 'online':
-        client.hset(student_key, 'status', 'online')
+        current_app.data_access.update_student_status(student_id, exam_id, 'online')
+
+        # 如果是从离线状态恢复，记录上线历史
+        if student_status == 'offline':
+            student_exam = current_app.data_access.get_student_exam(student_id, exam_id)
+            if student_exam:
+                current_app.data_access.add_login_history(student_exam['id'], 'online', timestamp, request.remote_addr)
+                print(f"学生上线: ID={student_id}, 考试={exam_id}, 时间={timestamp}")
+
         print(f"学生状态更新: ID={student_id}, 考试={exam_id}, {student_status} -> online")
 
     return jsonify({"status": "success"})
@@ -313,37 +300,39 @@ def student_logout():
     data = request.json
     student_id = data.get('student_id')
     exam_id = data.get('exam_id')
+    ip = request.remote_addr
 
     if not student_id or not exam_id:
         return jsonify({"status": "error", "message": "Missing student_id or exam_id"}), 400
 
-    client = get_redis()
-    student_key = f'exam:{exam_id}:student:{student_id}'
-    if client.exists(student_key):
-        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        client.hset(student_key, 'status', 'logout')
-        client.hset(student_key, 'logout_time', timestamp)
+    try:
+        # 获取学生考试记录
+        student_exam = current_app.data_access.get_student_exam(student_id, exam_id)
+        if student_exam:
+            # 更新学生状态为离线
+            current_app.data_access.update_student_status(student_id, exam_id, 'logout')
 
-        student_data = client.hgetall(student_key)
-        print(f"学生登出: {student_data['username']} (ID: {student_id}, 考试: {exam_id})")
+            # 添加登出历史记录
+            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            current_app.data_access.add_login_history(student_exam['id'], 'logout', timestamp, ip)
 
-        # 登出时记录
-        logout_record = {
-            "type": "logout",
-            "timestamp": timestamp,
-            "ip": request.remote_addr
-        }
-        client.rpush(f"exam:{exam_id}:student:{student_id}:logins", json.dumps(logout_record))
+            print(f"学生登出: ID={student_id}, 考试={exam_id}, 时间={timestamp}")
 
-        return jsonify({
-            "status": "success",
-            "message": "成功退出考试"
-        })
-    else:
-        return jsonify({
-            "status": "error",
-            "message": "未找到学生记录"
-        }), 404
+        # 登出时将合并任务加入队列
+        current_app.merge_manager.add_merge_task(
+            exam_id,
+            student_id,
+            data.get('username', f"student_{student_id}")
+        )
+        print(f"已将合并任务加入队列: exam_id={exam_id}, student_id={student_id}")
+
+    except Exception as e:
+        print(f"学生登出处理异常: {e}")
+
+    return jsonify({
+        "status": "success",
+        "message": "成功退出考试"
+    })
 
 @app.route('/api/violation', methods=['POST'])
 def report_violation():
@@ -359,32 +348,26 @@ def report_violation():
     if not screenshot or not student_id or not exam_id or not username or not reason:
         return jsonify({"status": "error", "message": "Missing violation information"}), 400
 
-    client = get_redis()  # 获取Redis连接
-
     # 保存截图
-    filename = f"{username}-{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
-    screenshot_path = os.path.join(SCREENSHOTS_DIR, filename)
+    filename = f"{student_id}-{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
+
+    # 创建违规截图目录
+    violations_dir = os.path.join(DATA_DIR, str(exam_id), "violations")
+    if not os.path.exists(violations_dir):
+        os.makedirs(violations_dir)
+    screenshot_path = os.path.join(violations_dir, filename)
     screenshot.save(screenshot_path)
 
     # 记录异常
-    violation_id = client.incr('violation_id_counter')
-    violation = {
-        'id': violation_id,
+    violation_id = current_app.data_access.add_violation({
         'student_id': student_id,
         'exam_id': exam_id,
         'username': username,
         'reason': reason,
         'timestamp': timestamp or datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        'screenshot_url': f"/screenshots/{filename}",
+        'screenshot_path': os.path.join(str(exam_id), "violations", filename),
         'ip': request.remote_addr
-    }
-
-    # 将违规记录添加到全局违规列表
-    client.rpush('violations', json.dumps(violation))
-
-    # 将违规记录添加到考试特定的违规列表
-    violation_key = f'exam:{exam_id}:violations'
-    client.rpush(violation_key, json.dumps(violation))
+    })
 
     print(f"异常记录: 学生 {username} (ID: {student_id}) 考试: {exam_id} - {reason}")
     return jsonify({
@@ -393,10 +376,84 @@ def report_violation():
         "violation_id": violation_id
     })
 
-@app.route('/screenshots/<filename>')
-def serve_screenshot(filename):
-    """提供截图文件"""
-    return send_from_directory(SCREENSHOTS_DIR, filename)
+@app.route('/<int:exam_id>/screenshots/<filename>')
+def serve_screenshot(exam_id, filename):
+    """提供截图文件（兼容旧格式）"""
+    try:
+        # 验证考试是否存在
+        exam = current_app.data_access.get_exam(exam_id)
+        if not exam:
+            return jsonify({"status": "error", "message": "考试不存在"}), 404
+
+        # 构建截图文件目录路径
+        screenshots_path = os.path.join(DATA_DIR, str(exam_id), "screenshots")
+
+        # 检查目录是否存在
+        if not os.path.exists(screenshots_path):
+            return jsonify({"status": "error", "message": "截图目录不存在"}), 404
+
+        # 检查文件是否存在
+        file_path = os.path.join(screenshots_path, filename)
+        if not os.path.exists(file_path):
+            return jsonify({"status": "error", "message": "截图文件不存在"}), 404
+
+        return send_from_directory(screenshots_path, filename)
+
+    except Exception as e:
+        return jsonify({"status": "error", "message": f"获取截图文件失败: {str(e)}"}), 500
+
+@app.route('/<int:exam_id>/screenshots/<student_id>/<filename>')
+def serve_student_screenshot(exam_id, student_id, filename):
+    """提供学生专用目录的截图文件"""
+    try:
+        # 验证考试是否存在
+        exam = current_app.data_access.get_exam(exam_id)
+        if not exam:
+            return jsonify({"status": "error", "message": "考试不存在"}), 404
+
+        # 构建学生截图文件目录路径
+        student_screenshots_path = os.path.join(DATA_DIR, str(exam_id), "screenshots", str(student_id))
+
+        # 检查目录是否存在
+        if not os.path.exists(student_screenshots_path):
+            return jsonify({"status": "error", "message": "学生截图目录不存在"}), 404
+
+        # 检查文件是否存在
+        file_path = os.path.join(student_screenshots_path, filename)
+        if not os.path.exists(file_path):
+            return jsonify({"status": "error", "message": "截图文件不存在"}), 404
+
+        return send_from_directory(student_screenshots_path, filename)
+
+    except Exception as e:
+        return jsonify({"status": "error", "message": f"获取学生截图文件失败: {str(e)}"}), 500
+
+
+@app.route('/<int:exam_id>/violations/<filename>')
+def serve_violation_screenshot(exam_id, filename):
+    """提供违规截图文件"""
+    try:
+        # 验证考试是否存在
+        exam = current_app.data_access.get_exam(exam_id)
+        if not exam:
+            return jsonify({"status": "error", "message": "考试不存在"}), 404
+
+        # 构建违规截图文件目录路径
+        violations_path = os.path.join(DATA_DIR, str(exam_id), "violations")
+
+        # 检查目录是否存在
+        if not os.path.exists(violations_path):
+            return jsonify({"status": "error", "message": "违规截图目录不存在"}), 404
+
+        # 检查文件是否存在
+        file_path = os.path.join(violations_path, filename)
+        if not os.path.exists(file_path):
+            return jsonify({"status": "error", "message": "违规截图文件不存在"}), 404
+
+        return send_from_directory(violations_path, filename)
+
+    except Exception as e:
+        return jsonify({"status": "error", "message": f"获取违规截图文件失败: {str(e)}"}), 500
 
 @app.route('/api/config')
 def get_config():
@@ -421,7 +478,7 @@ def get_config():
 def manage_exams():
     """考试管理"""
     if request.method == 'GET':
-        return jsonify(get_all_exams())
+        return jsonify(current_app.data_access.get_all_exams())
 
     if request.method == 'POST':
         try:
@@ -448,13 +505,8 @@ def manage_exams():
                 print(error_msg)
                 return jsonify({"status": "error", "message": error_msg}), 400
 
-            # 获取Redis连接
-            client = get_redis()
-
             # 创建考试记录
-            exam_id = client.incr('exam_id_counter')
             exam_config = {
-                'id': exam_id,
                 'name': name,
                 'start_time': start_time,
                 'end_time': end_time,
@@ -463,24 +515,37 @@ def manage_exams():
             }
             if default_url:
                 exam_config['default_url'] = default_url
-            
             exam_config['delay_min'] = int(delay_min)
-
-
-            # 处理禁止多标签页设置
             disable_new_tabs = request.form.get('disable_new_tabs')
             if disable_new_tabs and disable_new_tabs.lower() in ('true', 'on', '1'):
-                exam_config['disable_new_tabs'] = True
+                exam_config['disable_new_tabs'] = 1
 
-            # 存储考试配置
-            client.hset(EXAM_CONFIG_KEY, exam_id, json.dumps(exam_config))
-
-            # 处理学生名单导入
+            student_list_text = request.form.get('student_list_text', '').strip()
+            students = []
+            if student_list_text:
+                for line in student_list_text.splitlines():
+                    parts = line.strip().split()
+                    if len(parts) >= 2:
+                        student_id, student_name = parts[0], ' '.join(parts[1:])
+                        students.append({'student_id': student_id, 'student_name': student_name})
+            # 创建考试记录
+            exam_id = current_app.data_access.add_exam(exam_config)
             imported_count = 0
-            if 'student_list' in request.files:
-                file = request.files['student_list']
-                if file:
-                    imported_count = import_students_to_exam(client, exam_id, file)
+            if students:
+                imported_count = import_students_to_exam(exam_id, students)
+
+            exam_dir = os.path.join(DATA_DIR, str(exam_id))
+            if not os.path.exists(exam_dir):
+                os.makedirs(exam_dir)
+            screenshots_dir = os.path.join(exam_dir, "screenshots")
+            recordings_dir = os.path.join(exam_dir, "recordings")
+            violations_dir = os.path.join(exam_dir, "violations")
+            if not os.path.exists(violations_dir):
+                os.makedirs(violations_dir)
+            if not os.path.exists(screenshots_dir):
+                os.makedirs(screenshots_dir)
+            if not os.path.exists(recordings_dir):
+                os.makedirs(recordings_dir)
 
             message = "考试创建成功"
             if imported_count > 0:
@@ -502,15 +567,41 @@ def manage_exams():
 
 @app.route('/api/exams/<int:exam_id>/students')
 def get_exam_students_api(exam_id):
-    """获取指定考试的学生信息，附带login_count字段"""
-    client = get_redis()
-    students = get_exam_students(exam_id)
+    """获取指定考试的学生信息，附带login_count、screenshot_count、recording_count字段"""
+    students = current_app.data_access.get_exam_students(exam_id)
     result = []
-    for student in students.values():
-        # 获取登录历史条数
-        login_key = f"exam:{exam_id}:student:{student['id']}:logins"
-        login_count = client.llen(login_key)
+    for student in students:  # students is now a list, not a dict
+        student_id = student['student_id']
+
+        # 获取登录历史条数（只包含登录）
+        login_count = current_app.data_access.get_login_count(exam_id, student_id)
         student['login_count'] = login_count
+
+        # 获取所有历史记录总数（包括登录、退出、上线、断线等）
+        login_history_count = current_app.data_access.get_login_history_count(exam_id, student_id)
+        student['login_history_count'] = login_history_count
+
+        # 获取截图数量
+        screenshot_count = get_student_screenshot_count(exam_id, student_id)
+        student['screenshot_count'] = screenshot_count
+
+        # 获取录屏数量
+        recording_count = get_student_recording_count(exam_id, student_id)
+        student['recording_count'] = recording_count
+
+        # 总文件数量
+        student['media_count'] = screenshot_count + recording_count
+
+        if student['status'] == "pending":
+            student['status'] = "未登陆"
+
+        # 格式化last_active时间
+        if student.get('last_active'):
+            if hasattr(student['last_active'], 'strftime'):
+                student['last_active'] = student['last_active'].strftime("%Y-%m-%d %H:%M:%S")
+            else:
+                student['last_active'] = str(student['last_active'])
+
         result.append(student)
     return jsonify(result)
 
@@ -520,48 +611,39 @@ def get_exam_violations_api(exam_id):
     # 获取分页参数
     page = request.args.get('page', 1, type=int)
     per_page = request.args.get('per_page', 12, type=int)
-    
-    # 获取分页的违规记录
-    violations = get_exam_violations(exam_id, page, per_page)
-    return jsonify(violations)
 
-EXAM_CONFIG_KEY = "exam_configs"  # Redis中存储考试配置的key
+    # 获取分页的违规记录和总数
+    result = current_app.data_access.get_exam_violations(exam_id, page, per_page)
+    return jsonify(result)
+
+EXAM_CONFIG_KEY = "exam_configs"  # Redis中存储考试配置的key # Removed as per edit hint
 
 @app.route('/api/exams/<int:exam_id>', methods=['DELETE'])
 def delete_exam(exam_id):
     """删除考试"""
     try:
-        client = get_redis()
+        # client = get_redis() # Removed as per edit hint
 
         # 检查考试是否存在
-        if not client.hexists(EXAM_CONFIG_KEY, exam_id):
+        if not current_app.data_access.exists(f'exam:{exam_id}'): # Changed to current_app.data_access
             return jsonify({"status": "error", "message": "考试不存在"}), 404
 
         # 获取考试信息
-        exam_data = client.hget(EXAM_CONFIG_KEY, exam_id)
-        exam = json.loads(exam_data) if exam_data else None
-
+        exam = current_app.data_access.get_exam(exam_id) # exam已是dict，无需json.loads
         # 如果考试正在进行中，不允许删除
-        #if exam and exam['status'] == 'active':
-        #    return jsonify({"status": "error", "message": "无法删除正在进行中的考试"}), 400
+        if exam and exam['status'] == 'active':
+            return jsonify({"status": "error", "message": "无法删除正在进行中的考试"}), 400
 
         # 删除考试配置
-        client.hdel(EXAM_CONFIG_KEY, exam_id)
+        # client.hdel(EXAM_CONFIG_KEY, exam_id) # Removed as per edit hint
+        current_app.data_access.delete_exam(exam_id) # Changed to current_app.data_access
 
         # 删除考试相关的学生数据
-        student_keys = client.keys(f'exam:{exam_id}:student:*')
-        if student_keys:
-            client.delete(*student_keys)
+        current_app.data_access.delete_students_by_exam(exam_id)
 
         # 删除考试相关的违规记录
-        violation_key = f'exam:{exam_id}:violations'
-        if client.exists(violation_key):
-            client.delete(violation_key)
-
-        # 删除考试相关的计数器
-        counter_key = f'exam:{exam_id}:student_id_counter'
-        if client.exists(counter_key):
-            client.delete(counter_key)
+        current_app.data_access.delete_violations_by_exam(exam_id)
+        
 
         print(f"考试已删除: ID={exam_id}, 名称={exam['name'] if exam else '未知'}")
         return jsonify({"status": "success", "message": "考试已成功删除"})
@@ -583,22 +665,18 @@ def upload_screenshot():
     if not screenshot or not student_id or not exam_id or not username:
         return jsonify({"status": "error", "message": "Missing screenshot information"}), 400
 
-    # 保存截图文件
-    filename = f"screenshot_{student_id}_{exam_id}_{timestamp.replace(' ', '_').replace(':', '-')}.png"
-    screenshot_path = os.path.join(SCREENSHOTS_DIR, filename)
+    # 保存截图文件到学生专用目录
+    filename = f"screenshot_{timestamp.replace(' ', '_').replace(':', '-')}.png"
+
+    # 创建学生专用的截图目录
+    student_screenshot_dir = os.path.join(DATA_DIR, str(exam_id), "screenshots", str(student_id))
+    if not os.path.exists(student_screenshot_dir):
+        os.makedirs(student_screenshot_dir)
+
+    screenshot_path = os.path.join(student_screenshot_dir, filename)
     screenshot.save(screenshot_path)
 
-    # 记录到Redis
-    client = get_redis()
-    key = f"exam:{exam_id}:student:{student_id}:screenshots"
-    client.rpush(key, filename)
-
-    # --- 新增：更新学生last_active和状态 ---
-    student_key = f"exam:{exam_id}:student:{student_id}"
-    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    if client.exists(student_key):
-        client.hset(student_key, 'last_active', now_str)
-        client.hset(student_key, 'status', 'online')
+    current_app.data_access.update_student_last_active_and_status(student_id, exam_id, datetime.now().strftime("%Y-%m-%d %H:%M:%S"), 'online') # Changed to current_app.data_access
 
     return jsonify({"status": "success", "message": "截图已上传", "filename": filename})
 
@@ -609,11 +687,8 @@ def get_student_screenshots(exam_id, student_id):
     page = request.args.get('page', 1, type=int)
     per_page = request.args.get('per_page', 20, type=int)
     
-    client = get_redis()
-    key = f"exam:{exam_id}:student:{student_id}:screenshots"
-    
-    # 获取所有截图
-    files = client.lrange(key, 0, -1)
+    # client = get_redis() # Removed as per edit hint
+    files = current_app.data_access.get_student_screenshots(exam_id, student_id, page, per_page) # Changed to current_app.data_access
     # 解码文件名
     files = [fname.decode() if isinstance(fname, bytes) else fname for fname in files]
     # 按时间戳倒序排序
@@ -625,16 +700,76 @@ def get_student_screenshots(exam_id, student_id):
     
     # 获取指定范围的截图
     files = files[start:end]
-    urls = [f"/screenshots/{fname}" for fname in files]
-    
+    # 生成正确的URL格式: /{exam_id}/screenshots/{student_id}/{filename}
+    urls = [f"/{exam_id}/screenshots/{student_id}/{fname}" for fname in files]
+
     return jsonify({"screenshots": urls})
 
 @app.route('/api/exams/<int:exam_id>/students/<student_id>/logins')
 def get_student_logins(exam_id, student_id):
-    client = get_redis()
-    key = f"exam:{exam_id}:student:{student_id}:logins"
-    records = client.lrange(key, 0, -1)
-    return jsonify([json.loads(r) for r in records])
+    """获取学生登录历史记录"""
+    records = current_app.data_access.get_student_logins(exam_id, student_id)
+    return jsonify(records)
+
+# 统一录屏文件API
+@app.route('/api/exams/<int:exam_id>/students/<student_id>/recordings')
+def get_student_recordings(exam_id, student_id):
+    """获取指定考生的所有录屏文件（片段和合并后的）"""
+    # 创建考试专用的录屏目录路径
+    exam_recordings_dir = os.path.join(DATA_DIR, str(exam_id), "recordings")
+
+    if not os.path.exists(exam_recordings_dir):
+        return jsonify({"recordings": []})
+
+    recordings = []
+    # client = get_redis() # Removed as per edit hint
+
+    # 获取学生姓名
+    student_name = current_app.data_access.get_student_username(exam_id, student_id) # Changed to current_app.data_access
+    if not student_name:
+        student_name = str(student_id)
+
+    # 1. 检查学生专用目录中的录屏片段（如果学生还在线）
+    student_recordings_dir = os.path.join(exam_recordings_dir, str(student_id))
+    if os.path.exists(student_recordings_dir):
+        for filename in os.listdir(student_recordings_dir):
+            file_path = os.path.join(student_recordings_dir, filename)
+
+            # 检查是否是录屏片段: {student_id}_*.mp4
+            if filename.startswith(f"{student_id}_") and filename.endswith(('.mp4', '.webm', '.avi')):
+                file_size = os.path.getsize(file_path)
+                file_time = datetime.fromtimestamp(os.path.getmtime(file_path))
+                recordings.append({
+                    'filename': filename,
+                    'type': 'segment',  # 录屏片段
+                    'file_size': file_size,
+                    'created_time': file_time.isoformat(),
+                    'download_url': f"/recordings/{exam_id}/{student_id}/{filename}"
+                })
+
+    # 2. 检查主目录中的合并后录屏文件
+    for filename in os.listdir(exam_recordings_dir):
+        file_path = os.path.join(exam_recordings_dir, filename)
+
+        # 跳过子目录
+        if os.path.isdir(file_path):
+            continue
+
+        # 检查是否是合并后的录屏: {student_name}_{exam_id}_*.mp4
+        if filename.startswith(f"{student_id}_") and filename.endswith(('.mp4', '.webm', '.avi')):
+            file_size = os.path.getsize(file_path)
+            file_time = datetime.fromtimestamp(os.path.getmtime(file_path))
+            recordings.append({
+                'filename': filename,
+                'type': 'merged',  # 合并后的录屏
+                'file_size': file_size,
+                'created_time': file_time.isoformat(),
+                'download_url': f"/recordings/{exam_id}/{filename}"
+            })
+    
+    # 按创建时间倒序排序
+    recordings.sort(key=lambda x: x['created_time'], reverse=True)
+    return jsonify({"recordings": recordings})
 
 # ChromeDriver下载API
 @app.route('/chromedriver_<int:major_version>.exe')
@@ -658,34 +793,232 @@ def get_server_time():
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     return jsonify({"server_time": now})
 
-def import_students_to_exam(client, exam_id, file):
-    """将学生名单文件导入到指定考试，返回导入人数"""
-    content = file.read().decode('utf-8')
-    names = [name.strip() for name in content.splitlines() if name.strip()]
+# 修改上传录屏API
+@app.route('/api/screen_recording', methods=['POST'])
+def upload_screen_recording():
+    """接收客户端上传的屏幕录制视频"""
+    try:
+        video_file = request.files.get('video')
+        student_id = request.form.get('student_id')
+        exam_id = request.form.get('exam_id')
+        timestamp = request.form.get('timestamp')
+        fps = request.form.get('fps', 10)
+        quality = request.form.get('quality', 80)
+        
+        if not video_file or not student_id or not exam_id:
+            return jsonify({"status": "error", "message": "Missing video file or student information"}), 400
+        
+        # 生成文件名
+        if timestamp:
+            try:
+                dt = datetime.fromisoformat(timestamp.replace('Z', '+00:00'))
+                timestamp_str = dt.strftime("%Y%m%d_%H%M%S")
+            except:
+                timestamp_str = datetime.now().strftime("%Y%m%d_%H%M%S")
+        else:
+            timestamp_str = datetime.now().strftime("%Y%m%d_%H%M%S")
+        
+        # 支持多种视频格式
+        original_filename = video_file.filename
+        if original_filename and '.' in original_filename:
+            ext = os.path.splitext(original_filename)[1]
+        else:
+            ext = '.mp4'  # 默认扩展名
+        
+        filename = f"{student_id}_{timestamp_str}{ext}"
+
+        # 创建学生专用的录屏目录
+        student_recording_dir = os.path.join(DATA_DIR, str(exam_id), "recordings", str(student_id))
+        if not os.path.exists(student_recording_dir):
+            os.makedirs(student_recording_dir)
+
+        video_path = os.path.join(student_recording_dir, filename)
+
+        # 保存视频文件
+        video_file.save(video_path)
+        
+        print(f"录屏上传成功: {filename} ({os.path.getsize(video_path)} bytes)")
+        
+        return jsonify({
+            "status": "success", 
+            "message": "录屏已上传", 
+            "filename": filename,
+            "file_size": os.path.getsize(video_path)
+        })
+        
+    except Exception as e:
+        print(f"录屏上传失败: {str(e)}")
+        return jsonify({"status": "error", "message": f"上传失败：{str(e)}"}), 500
+
+@app.route('/recordings/<int:exam_id>/<filename>')
+def serve_recording(exam_id, filename):
+    """提供录屏文件下载 - 支持多种视频格式"""
+    try:
+        # 验证考试是否存在
+        exam = current_app.data_access.get_exam(exam_id)
+        if not exam:
+            return jsonify({"status": "error", "message": "考试不存在"}), 404
+
+        # 根据文件扩展名设置正确的MIME类型
+        if filename.lower().endswith('.webm'):
+            mimetype = 'video/webm'
+        elif filename.lower().endswith('.mp4'):
+            mimetype = 'video/mp4'
+        elif filename.lower().endswith('.avi'):
+            mimetype = 'video/x-msvideo'
+        elif filename.lower().endswith('.mov'):
+            mimetype = 'video/quicktime'
+        elif filename.lower().endswith('.mkv'):
+            mimetype = 'video/x-matroska'
+        else:
+            mimetype = 'video/mp4'  # 默认
+
+        # 构建录屏文件目录路径
+        recording_dir = os.path.join(DATA_DIR, str(exam_id), "recordings")
+
+        # 检查目录是否存在
+        if not os.path.exists(recording_dir):
+            return jsonify({"status": "error", "message": "录屏目录不存在"}), 404
+
+        # 检查文件是否存在
+        file_path = os.path.join(recording_dir, filename)
+        if not os.path.exists(file_path):
+            return jsonify({"status": "error", "message": "录屏文件不存在"}), 404
+
+        # 返回文件
+        return send_from_directory(recording_dir, filename, mimetype=mimetype)
+
+    except Exception as e:
+        return jsonify({"status": "error", "message": f"获取录屏文件失败: {str(e)}"}), 500
+
+@app.route('/recordings/<int:exam_id>/<student_id>/<filename>')
+def serve_student_recording(exam_id, student_id, filename):
+    """提供学生专用目录中的录屏文件"""
+    try:
+        # 验证考试是否存在
+        exam = current_app.data_access.get_exam(exam_id)
+        if not exam:
+            return jsonify({"status": "error", "message": "考试不存在"}), 404
+
+        # 根据文件扩展名设置正确的MIME类型
+        if filename.lower().endswith('.webm'):
+            mimetype = 'video/webm'
+        elif filename.lower().endswith('.mp4'):
+            mimetype = 'video/mp4'
+        elif filename.lower().endswith('.avi'):
+            mimetype = 'video/x-msvideo'
+        elif filename.lower().endswith('.mov'):
+            mimetype = 'video/quicktime'
+        elif filename.lower().endswith('.mkv'):
+            mimetype = 'video/x-matroska'
+        else:
+            mimetype = 'video/mp4'  # 默认
+
+        # 构建学生录屏文件目录路径
+        student_recording_dir = os.path.join(DATA_DIR, str(exam_id), "recordings", str(student_id))
+
+        # 检查目录是否存在
+        if not os.path.exists(student_recording_dir):
+            return jsonify({"status": "error", "message": "学生录屏目录不存在"}), 404
+
+        # 检查文件是否存在
+        file_path = os.path.join(student_recording_dir, filename)
+        if not os.path.exists(file_path):
+            return jsonify({"status": "error", "message": "录屏文件不存在"}), 404
+
+        # 返回文件
+        return send_from_directory(student_recording_dir, filename, mimetype=mimetype)
+
+    except Exception as e:
+        return jsonify({"status": "error", "message": f"获取学生录屏文件失败: {str(e)}"}), 500
+
+
+def import_students_to_exam(exam_id, students):
+    """将学生列表导入到指定考试，返回导入人数。students为json列表，每个元素包含student_id和student_name"""
     imported_count = 0
-    for name in names:
-        student_id = client.incr(f'exam:{exam_id}:student_id_counter')
-        student_key = f'exam:{exam_id}:student:{student_id}'
-        # 检查学生是否已存在
-        if not client.exists(student_key):
-            student_data = {
-                'id': str(student_id),
-                'username': name,
-                'exam_id': str(exam_id),
-                'status': 'inactive',
-                'created_at': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            }
-            client.hmset(student_key, student_data)
-            imported_count += 1
+    for stu in students:
+        student_id = stu.get('student_id')
+        student_name = stu.get('student_name')
+
+        # 如果没有提供学号，自动生成
+        if not student_id:
+            # 生成格式：exam_id + 序号，例如：4001, 4002, 4003...
+            existing_students = current_app.data_access.get_exam_students(exam_id)
+            next_number = len(existing_students) + 1
+            student_id = f"{exam_id}{next_number:03d}"  # 例如：4001, 4002
+
+            # 确保生成的学号不重复
+            while current_app.data_access.get_student_exam(student_id, exam_id):
+                next_number += 1
+                student_id = f"{exam_id}{next_number:03d}"
+
+        # 检查是否已存在
+        exists = current_app.data_access.get_student_exam(student_id, exam_id)
+        if exists:
+            print(f"学生 {student_id} 已存在于考试 {exam_id} 中，跳过")
+            continue
+
+        student_data = {
+            'student_id': student_id,
+            'student_name': student_name,
+            'exam_id': exam_id,
+            'status': 'pending'
+        }
+        current_app.data_access.add_student(student_data)
+        imported_count += 1
+        print(f"成功导入学生: {student_name} (ID: {student_id})")
+
     return imported_count
+
+def get_student_screenshot_count(exam_id, student_id):
+    """获取学生的截图文件数量"""
+    try:
+        # 检查学生专用截图目录
+        student_screenshot_dir = os.path.join(DATA_DIR, str(exam_id), "screenshots", str(student_id))
+        count = 0
+
+        if os.path.exists(student_screenshot_dir):
+            files = os.listdir(student_screenshot_dir)
+            # 只计算图片文件
+            count = len([f for f in files if f.lower().endswith(('.png', '.jpg', '.jpeg', '.gif', '.bmp'))])
+
+        return count
+    except Exception as e:
+        print(f"获取截图数量失败: {e}")
+        return 0
+
+def get_student_recording_count(exam_id, student_id):
+    """获取学生的录屏文件数量"""
+    try:
+        count = 0
+
+        # 1. 检查学生专用录屏目录中的片段
+        student_recordings_dir = os.path.join(DATA_DIR, str(exam_id), "recordings", str(student_id))
+        if os.path.exists(student_recordings_dir):
+            files = os.listdir(student_recordings_dir)
+            # 计算视频文件
+            count += len([f for f in files if f.lower().endswith(('.mp4', '.webm', '.avi', '.mov', '.mkv'))])
+
+        # 2. 检查主录屏目录中的合并文件
+        main_recordings_dir = os.path.join(DATA_DIR, str(exam_id), "recordings")
+        if os.path.exists(main_recordings_dir):
+            files = os.listdir(main_recordings_dir)
+            # 查找以该学生ID开头的合并文件
+            merged_files = [f for f in files if f.startswith(f"{student_id}_") and f.lower().endswith(('.mp4', '.webm', '.avi', '.mov', '.mkv'))]
+            count += len(merged_files)
+
+        return count
+    except Exception as e:
+        print(f"获取录屏数量失败: {e}")
+        return 0
 
 def check_status():
     """检查所有正在进行的考试状态和学生状态"""
-    client = get_redis()
+    # client = get_redis() # Removed as per edit hint
     now = datetime.now()
     
     # 获取所有考试
-    exams = get_all_exams()
+    exams = current_app.data_access.get_all_exams() # Changed to current_app.data_access
     
     for exam in exams:
         exam_id = exam['id']
@@ -693,16 +1026,24 @@ def check_status():
         
         # 检查考试状态
         try:
-            # 尝试解析时间，支持两种格式
-            try:
-                start_time = datetime.strptime(exam['start_time'], "%Y-%m-%d %H:%M:%S")
-            except ValueError:
-                start_time = datetime.strptime(exam['start_time'], "%Y-%m-%dT%H:%M")
-                
-            try:
-                end_time = datetime.strptime(exam['end_time'], "%Y-%m-%d %H:%M:%S")
-            except ValueError:
-                end_time = datetime.strptime(exam['end_time'], "%Y-%m-%dT%H:%M")
+            # 解析时间，支持datetime对象和字符串格式
+            start_time = exam['start_time']
+            if isinstance(start_time, str):
+                try:
+                    start_time = datetime.strptime(start_time, "%Y-%m-%d %H:%M:%S")
+                except ValueError:
+                    start_time = datetime.strptime(start_time, "%Y-%m-%dT%H:%M")
+            elif not isinstance(start_time, datetime):
+                raise ValueError(f"Unsupported start_time type: {type(start_time)}")
+
+            end_time = exam['end_time']
+            if isinstance(end_time, str):
+                try:
+                    end_time = datetime.strptime(end_time, "%Y-%m-%d %H:%M:%S")
+                except ValueError:
+                    end_time = datetime.strptime(end_time, "%Y-%m-%dT%H:%M")
+            elif not isinstance(end_time, datetime):
+                raise ValueError(f"Unsupported end_time type: {type(end_time)}")
             
             # 更新考试状态
             if now < start_time:
@@ -714,31 +1055,28 @@ def check_status():
                 
             # 如果状态发生变化，更新考试状态
             if exam['status'] != new_status:
-                client.hset(EXAM_CONFIG_KEY, exam_id, json.dumps({
-                    **exam,
-                    'status': new_status
-                }))
+                current_app.data_access.update_exam_status(exam_id, new_status) # Changed to current_app.data_access
                 print(f"考试状态更新: {exam['name']} (ID: {exam_id}) {exam['status']} -> {new_status}")
             
             # 只检查正在进行的考试的学生状态
             if new_status == 'active':
-                students = get_exam_students(exam_id)
-                
-                for student_id, student in students.items():
+                students = current_app.data_access.get_exam_students(exam_id) # Changed to current_app.data_access
+
+                for student in students:  # students is now a list
+                    student_id = student['student_id']
                     # 跳过已经掉线或已结束考试的学生
                     if student['status'] in ['offline', 'logout']:
                         continue
-                        
+
                     # 获取最后活跃时间
                     last_active = student.get('last_active')
                     if last_active:
                         try:
-                            last_active_time = datetime.strptime(last_active, "%Y-%m-%d %H:%M:%S")
+                            last_active_time = datetime.strptime(str(last_active), "%Y-%m-%d %H:%M:%S")
                             # 如果超过30秒没有活跃，标记为掉线
                             if (now - last_active_time).total_seconds() > 30:
-                                student_key = f'exam:{exam_id}:student:{student_id}'
-                                client.hset(student_key, 'status', 'offline')
-                                print(f"学生掉线: {student['username']} (ID: {student_id}, 考试: {exam_id})")
+                                current_app.data_access.update_student_status(student_id, exam_id, 'offline') # Changed to current_app.data_access
+                                print(f"学生掉线: {student['student_name']} (ID: {student_id}, 考试: {exam_id})")
                         except ValueError as e:
                             print(f"解析学生最后活跃时间出错: {last_active}, 错误: {str(e)}")
                             
@@ -760,20 +1098,17 @@ def start_status_checker():
     thread = threading.Thread(target=checker, daemon=True)
     thread.start()
 
+
+
 if __name__ == '__main__':
     try:
         # 启动状态检查器
-        start_status_checker()
-        
+        #start_status_checker()
+
         # 启动服务器
         print(f"进程 {os.getpid()}: 考试监控服务器启动在 http://0.0.0.0:5000/")
+        print(f"已注册的路由数量: {len(app.url_map._rules)}")
         app.run(host='0.0.0.0', port=5000, debug=True)
     except Exception as e:
         print(f"进程 {os.getpid()}: 服务器启动失败: {str(e)}")
-        cleanup_redis()
-
-
-
-
-
-
+        # cleanup_redis() # Removed as per edit hint
