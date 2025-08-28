@@ -137,7 +137,6 @@ def find_local_chromedriver():
     for path in chromedriver_paths:
         if os.path.exists(path):
             print(f"找到本地ChromeDriver: {path}")
-            print('path:', path)
             return path
     print("未找到本地ChromeDriver")
     return None

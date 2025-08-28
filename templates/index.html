@@ -403,9 +403,9 @@
                             </div>
                         </div>
                         <div class="mb-3">
-                            <label class="form-label">导入学生名单（可选）</label>
-                            <input type="file" class="form-control" name="student_list" accept=".txt">
-                            <div class="form-text">支持txt文本文件，每行一个学生姓名</div>
+                            <label class="form-label">学生名单（每行“学号 姓名”）</label>
+                            <textarea class="form-control" name="student_list_text" rows="6" placeholder="2023001 张三&#10;2023002 李四&#10;2023003 王五"></textarea>
+                            <div class="form-text">每行一个学生，学号和姓名用空格分隔</div>
                         </div>
                     </form>
                 </div>
@@ -427,10 +427,35 @@
                 </div>
                 <div class="modal-body">
                     <form id="importStudentsForm">
-                        <div class="mb-3">
-                            <label class="form-label">选择文本文件</label>
-                            <input type="file" class="form-control" name="student_list" accept=".txt" required>
-                            <div class="form-text">支持txt文本文件，每行一个学生姓名）</div>
+                        <!-- 选项卡导航 -->
+                        <ul class="nav nav-tabs mb-3" id="importTabs" role="tablist">
+                            <li class="nav-item" role="presentation">
+                                <button class="nav-link active" id="text-tab" data-bs-toggle="tab" data-bs-target="#text-import" type="button" role="tab">文本输入</button>
+                            </li>
+                            <li class="nav-item" role="presentation">
+                                <button class="nav-link" id="file-tab" data-bs-toggle="tab" data-bs-target="#file-import" type="button" role="tab">文件上传</button>
+                            </li>
+                        </ul>
+
+                        <!-- 选项卡内容 -->
+                        <div class="tab-content" id="importTabContent">
+                            <!-- 文本输入方式 -->
+                            <div class="tab-pane fade show active" id="text-import" role="tabpanel">
+                                <div class="mb-3">
+                                    <label class="form-label">学生名单（每行"学号 姓名"）</label>
+                                    <textarea class="form-control" name="student_list_text" rows="8" placeholder="2023001 张三&#10;2023002 李四&#10;2023003 王五"></textarea>
+                                    <div class="form-text">每行一个学生，学号和姓名用空格分隔</div>
+                                </div>
+                            </div>
+
+                            <!-- 文件上传方式 -->
+                            <div class="tab-pane fade" id="file-import" role="tabpanel">
+                                <div class="mb-3">
+                                    <label class="form-label">选择文本文件</label>
+                                    <input type="file" class="form-control" name="student_list_file" accept=".txt">
+                                    <div class="form-text">支持txt文本文件，每行格式："学号 姓名"</div>
+                                </div>
+                            </div>
                         </div>
                     </form>
                 </div>
@@ -528,6 +553,41 @@
         let isLoadingViolations = false;
         const VIOLATIONS_PER_PAGE = 12;
 
+        // 格式化时间为中文格式：xx年xx月xx日xx时xx分
+        function formatChineseDateTime(dateTimeStr) {
+            if (!dateTimeStr) return '';
+
+            try {
+                // 处理不同的时间格式
+                let date;
+                if (dateTimeStr.includes('T')) {
+                    // ISO格式：2024-01-15T14:30:00
+                    date = new Date(dateTimeStr);
+                } else if (dateTimeStr.includes('-') && dateTimeStr.includes(' ')) {
+                    // 标准格式：2024-01-15 14:30:00
+                    date = new Date(dateTimeStr);
+                } else {
+                    // 其他格式
+                    date = new Date(dateTimeStr);
+                }
+
+                if (isNaN(date.getTime())) {
+                    return dateTimeStr; // 如果解析失败，返回原字符串
+                }
+
+                const year = date.getFullYear();
+                const month = date.getMonth() + 1;
+                const day = date.getDate();
+                const hour = date.getHours();
+                const minute = date.getMinutes();
+
+                return `${year}年${month}月${day}日${hour}时${minute.toString().padStart(2, '0')}分`;
+            } catch (error) {
+                console.error('时间格式化错误:', error, dateTimeStr);
+                return dateTimeStr; // 如果出错，返回原字符串
+            }
+        }
+
         // 更新当前时间
         function updateCurrentTime() {
             const now = new Date();
@@ -562,8 +622,8 @@
                             } else {
                                 for (let i = 0; i < students.length; i++) {
                                     const s = students[i];
-                                    const last = window.lastStudentStatusMap[s.id];
-                                    if (!last || last.status !== s.status || last.login_time !== s.login_time || last.logout_time !== s.logout_time || last.login_count !== s.login_count) {
+                                    const last = window.lastStudentStatusMap[s.student_id];
+                                    if (!last || last.status !== s.status || last.login_time !== s.login_time || last.logout_time !== s.logout_time || last.login_count !== s.login_count || last.login_history_count !== s.login_history_count || last.screenshot_count !== s.screenshot_count || last.recording_count !== s.recording_count || last.media_count !== s.media_count) {
                                         changed = true;
                                         break;
                                     }
@@ -584,10 +644,16 @@
                         page: 1,
                         per_page: VIOLATIONS_PER_PAGE
                     },
-                    success: function(violations) {
+                    success: function(response) {
+                        const violations = response.violations || [];
+                        const total = response.total || 0;
+
+                        // 更新违规记录统计数字
+                        $('#violation-count').text(total);
+
                         if (violations.length > 0) {
                             const newViolations = violations.filter(v => !loadedViolationScreenshots.has(v.screenshot_url));
-                            
+
                             if (newViolations.length > 0) {
                                 // 显示新违规提示
                                 const notification = $(`
@@ -597,7 +663,7 @@
                                     </div>
                                 `);
                                 $('body').append(notification);
-                                
+
                                 // 3秒后自动关闭提示
                                 setTimeout(() => {
                                     notification.alert('close');
@@ -608,7 +674,7 @@
                                 hasMoreViolations = true;
                                 loadedViolationScreenshots.clear();
                                 lastViolationCount = 0;
-                                
+
                                 // 重新渲染所有违规记录
                                 renderViolations(violations, false);
                             }
@@ -634,8 +700,8 @@
                             <div class="card-body" onclick="selectExam(${exam.id})">
                                 <h5 class="card-title">${exam.name}</h5>
                                 <p class="card-text">
-                                    开始: ${exam.start_time.replace('T', ' ')}<br>
-                                    结束: ${exam.end_time.replace('T', ' ')}<br>
+                                    开始: ${formatChineseDateTime(exam.start_time)}<br>
+                                    结束: ${formatChineseDateTime(exam.end_time)}<br>
                                     状态: ${getStatusText(exam.status)}<br>
                                     ${exam.default_url ? `<span class='text-muted'>默认网址: <a style='color:#1976d2;' href=${exam.default_url} target="_blank">${exam.default_url}</a></span><br>` : ''}
                                     ${exam.delay_min && exam.delay_min > 0 ? `<span class='text-muted'>监控延时: <span style='color:#fbc02d;'>${exam.delay_min} 分钟</span></span><br>` : ''}
@@ -693,7 +759,13 @@
             $.ajax({
                 url: `/api/exams/${examId}/violations`,
                 method: 'GET',
-                success: function(violations) {
+                success: function(response) {
+                    const violations = response.violations || [];
+                    const total = response.total || 0;
+
+                    // 更新违规记录统计数字
+                    $('#violation-count').text(total);
+
                     renderViolations(violations);
                 }
             });
@@ -711,6 +783,7 @@
             const default_url = form.find('[name="default_url"]').val();
             const delay_min = form.find('[name="delay_min"]').val();
             const disable_new_tabs = form.find('[name="disable_new_tabs"]').is(':checked');
+            const studentListText = form.find('[name="student_list_text"]').val();
 
             // 验证必填字段
             if (!name || !start_time || !end_time) {
@@ -725,6 +798,7 @@
             if (default_url) formData.append('default_url', default_url);
             if (delay_min) formData.append('delay_min', delay_min);
             formData.append('disable_new_tabs', disable_new_tabs);
+            if (studentListText) formData.append('student_list_text', studentListText);
 
             // 添加学生名单文件（如果有）
             const fileInput = form.find('[name="student_list"]')[0];
@@ -836,31 +910,33 @@
                 }
 
                 let studentInfoHtml = `
-                    <li class="list-group-item d-flex justify-content-between align-items-center student-card ${statusClass}" style="${extraStyle}" id="student-item-${student.id}">
+                    <li class="list-group-item d-flex justify-content-between align-items-center student-card ${statusClass}" style="${extraStyle}" id="student-item-${student.student_id}">
                         <div>
                             <div class="fw-bold">
-                                ${student.username} 
-                                <span id="student-status-${student.id}">${statusBadge}</span>
+                                <span title="学号: ${student.student_id}" style="cursor: help;">${student.student_name}</span>
+                                <span id="student-status-${student.student_id}">${statusBadge}</span>
                             </div>
-                            <div class="small text-muted" id="student-ip-${student.id}">IP: ${student.ip || '未知'}</div>
-                            <div class="timestamp" id="student-login-${student.id}">${student.login_time ? `登录: ${student.login_time}` : ''}</div>
-                            <div class="timestamp text-danger" id="student-logout-${student.id}">${student.logout_time ? `结束考试: ${student.logout_time}` : ''}</div>
+                            <div class="small text-muted" id="student-ip-${student.student_id}">IP: ${student.ip || '未知'}</div>
+                            <div class="timestamp" id="student-login-${student.student_id}">${student.login_time ? `登录: ${student.login_time}` : ''}</div>
+                            <div class="timestamp text-danger" id="student-logout-${student.student_id}">${student.logout_time ? `结束考试: ${student.logout_time}` : ''}</div>
                         </div>
                         <div class="d-flex flex-column align-items-end">
-                            <button class="btn btn-sm btn-outline-primary mb-2" onclick="showStudentScreenshots('${student.exam_id}','${student.id}','${student.username}')">
-                                查看截图
+                            <button class="btn btn-sm btn-outline-primary mb-2"
+                                    onclick="showStudentScreenshots('${student.exam_id}','${student.student_id}','${student.student_name}')"
+                                    title="截图: ${student.screenshot_count || 0}个, 录屏: ${student.recording_count || 0}个">
+                                截图/录屏 <span class="badge ${(student.media_count || 0) > 0 ? 'bg-success' : 'bg-secondary'}">${student.media_count || 0}</span>
                             </button>
                             <div class="student-login-history">
                             <button class="btn btn-sm btn-outline-secondary" type="button"
                                     data-bs-toggle="collapse"
-                                data-bs-target="#login-history-list-${student.exam_id}-${student.id}"
+                                data-bs-target="#login-history-list-${student.exam_id}-${student.student_id}"
                                 aria-expanded="false"
-                                aria-controls="login-history-list-${student.exam_id}-${student.id}"
-                                onclick="event.stopPropagation(); loadStudentLoginHistory('${student.exam_id}','${student.id}')"
+                                aria-controls="login-history-list-${student.exam_id}-${student.student_id}"
+                                onclick="event.stopPropagation(); loadStudentLoginHistory('${student.exam_id}','${student.student_id}')"
                                 >
-                                登录/退出历史 <span id="login-history-count-${student.exam_id}-${student.id}">(${student.login_count})</span>
+                                登录/退出历史 <span id="login-history-count-${student.exam_id}-${student.student_id}">(${student.login_history_count || 0})</span>
                             </button>
-                            <div class="collapse" id="login-history-list-${student.exam_id}-${student.id}">
+                            <div class="collapse" id="login-history-list-${student.exam_id}-${student.student_id}">
                                 <div class="card card-body p-2" style="background:#f8f9fa;">
                                     <div class="text-muted">加载中...</div>
                                     </div>
@@ -874,11 +950,15 @@
             if (window.lastStudentStatusMap !== undefined) {
                 window.lastStudentStatusMap = {};
                 students.forEach(s => {
-                    window.lastStudentStatusMap[s.id] = {
+                    window.lastStudentStatusMap[s.student_id] = {
                         status: s.status,
                         login_time: s.login_time,
                         logout_time: s.logout_time,
-                        login_count: s.login_count
+                        login_count: s.login_count,
+                        login_history_count: s.login_history_count,
+                        screenshot_count: s.screenshot_count,
+                        recording_count: s.recording_count,
+                        media_count: s.media_count
                     };
                 });
             }
@@ -891,14 +971,11 @@
 
         // 查看考生截图弹窗
         function showStudentScreenshots(examId, studentId, username) {
-            // 重置分页状态
-            currentScreenshotPage = 1;
-            hasMoreScreenshots = true;
-            isLoadingScreenshots = false;
-            
+            console.log(`Loading media for student: ${studentId}, exam: ${examId}`);
+
             // 显示加载中的模态框
             $('#studentScreenshotModal .modal-body').html(`
-                <h5 class='mb-3'>${username} 的截图</h5>
+                <h5 class='mb-3'>${username} 的截图/录屏</h5>
                 <div class="masonry-container"></div>
                 <div class="loading-spinner">
                     <div class="spinner-border" role="status"></div>
@@ -906,76 +983,114 @@
                 </div>
             `);
             $('#studentScreenshotModal').modal('show');
-            
-            // 加载第一页截图
-            loadScreenshots(examId, studentId, username);
 
-            // 设置滚动监听
-            setupScreenshotScroll(examId, studentId, username);
+            // 使用统一的录屏API
+            $.get(`/api/exams/${examId}/students/${studentId}/recordings`)
+                .done(function(data) {
+                    console.log('Recordings API response:', data);
+                    let recordings = data.recordings || [];
+                    if (recordings.length > 0) {
+                        console.log(`Found ${recordings.length} recordings`);
+                        renderRecordings(recordings);
+                    } else {
+                        console.log('No recordings found, trying screenshots...');
+                        // 如果没有录屏，尝试获取截图
+                        $.get(`/api/exams/${examId}/students/${studentId}/screenshots`)
+                            .done(function(data) {
+                                console.log('Screenshots API response:', data);
+                                let screenshots = data.screenshots || [];
+                                if (screenshots.length > 0) {
+                                    console.log(`Found ${screenshots.length} screenshots`);
+                                    renderScreenshots(screenshots);
+                                } else {
+                                    console.log('No screenshots found');
+                                    $('#studentScreenshotModal .masonry-container').html('<div class="text-muted">暂无截图或录屏</div>');
+                                }
+                                $('.loading-spinner').hide();
+                            })
+                            .fail(function(xhr, status, error) {
+                                console.error('Screenshots API error:', xhr.status, error);
+                                $('#studentScreenshotModal .masonry-container').html(`<div class="text-danger">获取截图失败: ${xhr.status} ${error}</div>`);
+                                $('.loading-spinner').hide();
+                            });
+                    }
+                })
+                .fail(function(xhr, status, error) {
+                    console.error('Recordings API error:', xhr.status, error);
+                    console.log('Trying screenshots as fallback...');
+                    // 录屏API失败，尝试截图API
+                    $.get(`/api/exams/${examId}/students/${studentId}/screenshots`)
+                        .done(function(data) {
+                            console.log('Screenshots API response (fallback):', data);
+                            let screenshots = data.screenshots || [];
+                            if (screenshots.length > 0) {
+                                console.log(`Found ${screenshots.length} screenshots`);
+                                renderScreenshots(screenshots);
+                            } else {
+                                console.log('No screenshots found');
+                                $('#studentScreenshotModal .masonry-container').html('<div class="text-muted">暂无截图或录屏</div>');
+                            }
+                            $('.loading-spinner').hide();
+                        })
+                        .fail(function(xhr2, status2, error2) {
+                            console.error('Screenshots API error (fallback):', xhr2.status, error2);
+                            $('#studentScreenshotModal .masonry-container').html(`<div class="text-danger">获取媒体文件失败: 录屏API ${xhr.status}, 截图API ${xhr2.status}</div>`);
+                            $('.loading-spinner').hide();
+                        });
+                });
         }
 
-        // 添加截图加载函数
-        function loadScreenshots(examId, studentId, username, page = 1) {
-            if (isLoadingScreenshots || !hasMoreScreenshots) return;
-            
-            isLoadingScreenshots = true;
-            
-            $.ajax({
-                url: `/api/exams/${examId}/students/${studentId}/screenshots`,
-                method: 'GET',
-                data: { 
-                    page: page,
-                    per_page: 20
-                },
-                success: function(data) {
-                    let screenshots = data.screenshots || [];
-                    
-                    // 只解析时间戳，不进行排序
-                    screenshots = screenshots.map(url => {
-                        const match = url.match(/screenshot_\d+_\d+_(\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2})\.png$/);
-                        let time = '';
-                        if (match) {
-                            time = match[1].replace('_', ' ').replace(/-/g, ':');
-                            time = time.replace(/^(\d{4}):(\d{2}):(\d{2})/, '$1-$2-$3');
-                        }
-                        return {url, time};
-                    });
-                    
-                    // 检查是否还有更多截图
-                    hasMoreScreenshots = screenshots.length === 20;
-                    
-                    const masonryContainer = $('#studentScreenshotModal .masonry-container');
-                    
-                    if (screenshots.length === 0 && page === 1) {
-                        masonryContainer.html('<div class="text-muted">暂无截图</div>');
-                    } else {
-                        // 清空容器
-                        if (page === 1) {
-                            masonryContainer.empty();
-                        }
-                        // 添加截图（直接使用服务器返回的顺序）
-                        screenshots.forEach(s => {
-                            const item = $(`
-                                <div class="masonry-item">
-                                    <img src="${s.url}" alt="截图" 
-                                        onclick="showBigScreenshot('${s.url}')"
-                                        loading="lazy">
-                                    <div class="timestamp">${s.time || ''}</div>
-                                </div>
-                            `);
-                            masonryContainer.append(item);
-                        });
-                    }
-                    
-                    // 显示或隐藏加载动画
-                    $('#studentScreenshotModal .loading-spinner').toggleClass('active', hasMoreScreenshots);
-                    
-                    isLoadingScreenshots = false;
-                },
-                error: function() {
-                    $('#studentScreenshotModal .modal-body').html('<div class="text-danger">获取截图失败</div>');
-                    isLoadingScreenshots = false;
-                }
+        function renderScreenshots(screenshots) {
+            console.log('Rendering screenshots:', screenshots);
+            const masonryContainer = $('#studentScreenshotModal .masonry-container');
+            masonryContainer.empty();
+
+            screenshots.forEach((s, index) => {
+                console.log(`Adding screenshot ${index + 1}: ${s}`);
+                masonryContainer.append(`<div class="masonry-item"><img src="${s}" class="img-fluid" loading="lazy" onclick="showBigScreenshot('${s}')" style="cursor: pointer;" onerror="console.error('Failed to load image: ${s}')"></div>`);
+            });
+
+            $('.loading-spinner').hide();
+        }
+
+        function renderRecordings(recordings) {
+            console.log('Rendering recordings:', recordings);
+            const masonryContainer = $('#studentScreenshotModal .masonry-container');
+            masonryContainer.empty();
+
+            recordings.forEach((r, index) => {
+                console.log(`Adding recording ${index + 1}:`, r);
+                let typeLabel = r.type === 'merged' ? '合并录屏' : '录屏片段';
+                let downloadText = r.type === 'merged' ? '下载合并录屏' : '下载片段';
+                let buttonClass = r.type === 'merged' ? 'success' : 'primary';
+
+                masonryContainer.append(`
+                    <div class="masonry-item">
+                        <video controls width="100%" src="${r.download_url}" onerror="console.error('Failed to load video: ${r.download_url}')">
+                            您的浏览器不支持视频播放
+                        </video>
+                        <div class="timestamp">
+                            ${r.filename} (${typeLabel})
+                        </div>
+                        <a href="${r.download_url}" target="_blank" class="btn btn-sm btn-outline-${buttonClass} mt-1">${downloadText}</a>
+                    </div>
+                `);
+            });
+
+            $('.loading-spinner').hide();
+        }
+
+        function renderMergedRecordings(merged) {
+            const masonryContainer = $('#studentScreenshotModal .masonry-container');
+            masonryContainer.empty();
+            merged.forEach(r => {
+                masonryContainer.append(`
+                    <div class="masonry-item">
+                        <video controls width="100%" src="${r.download_url}"></video>
+                        <div class="timestamp">${r.filename}</div>
+                        <a href="${r.download_url}" target="_blank" class="btn btn-sm btn-outline-success mt-1">下载合并录屏</a>
+                    </div>
+                `);
             });
         }
 
@@ -1085,7 +1200,8 @@
                     page: currentViolationPage,
                     per_page: VIOLATIONS_PER_PAGE
                 },
-                success: function(violations) {
+                success: function(response) {
+                    const violations = response.violations || [];
                     renderViolations(violations, true);
                     isLoadingViolations = false;
                 },
@@ -1103,15 +1219,35 @@
                 return;
             }
 
+            // 检查当前激活的选项卡
+            const activeTab = document.querySelector('#importTabs .nav-link.active').id;
             const formData = new FormData();
-            const fileInput = document.querySelector('#importStudentsForm [name="student_list"]');
 
-            if (!fileInput.files.length) {
-                alert('请选择文件');
-                return;
+            if (activeTab === 'text-tab') {
+                // 文本输入方式
+                const textInput = document.querySelector('#importStudentsForm [name="student_list_text"]');
+                const studentListText = textInput.value.trim();
+
+                if (!studentListText) {
+                    alert('请输入学生名单');
+                    return;
+                }
+
+                formData.append('student_list_text', studentListText);
+                formData.append('import_type', 'text');
+            } else {
+                // 文件上传方式
+                const fileInput = document.querySelector('#importStudentsForm [name="student_list_file"]');
+
+                if (!fileInput.files.length) {
+                    alert('请选择文件');
+                    return;
+                }
+
+                formData.append('student_list_file', fileInput.files[0]);
+                formData.append('import_type', 'file');
             }
 
-            formData.append('student_list', fileInput.files[0]);
             formData.append('exam_id', currentExamId);
 
             $.ajax({
@@ -1182,10 +1318,12 @@
 
         // 查看学生登录历史
         function loadStudentLoginHistory(examId, studentId) {
+            console.log(`Loading login history for exam ${examId}, student ${studentId}`);
             $.ajax({
                 url: `/api/exams/${examId}/students/${studentId}/logins`,
                 method: 'GET',
                 success: function(records) {
+                    console.log(`Received ${records.length} login records:`, records);
                     // 更新数量
                     $(`#login-history-count-${examId}-${studentId}`).text(`(${records.length})`);
                     let html = '';
@@ -1205,8 +1343,32 @@
                                     bgStyle = 'background-color:#ffcccc;';
                                 }
                             }
+                            // 根据不同的状态类型设置不同的样式和文本
+                            let badgeClass = 'secondary';
+                            let statusText = '未知';
+                            switch(r.type) {
+                                case 'login':
+                                    badgeClass = 'success';
+                                    statusText = '登录';
+                                    break;
+                                case 'logout':
+                                    badgeClass = 'danger';
+                                    statusText = '退出';
+                                    break;
+                                case 'online':
+                                    badgeClass = 'info';
+                                    statusText = '上线';
+                                    break;
+                                case 'offline':
+                                    badgeClass = 'warning';
+                                    statusText = '断线';
+                                    break;
+                                default:
+                                    badgeClass = 'secondary';
+                                    statusText = r.type;
+                            }
                             html += `<li class="list-group-item py-1 px-2" style="${bgStyle}">
-                                <span class="badge bg-${r.type === 'login' ? 'success' : 'secondary'}">${r.type === 'login' ? '登录' : '退出'}</span>
+                                <span class="badge bg-${badgeClass}">${statusText}</span>
                                 时间: ${r.timestamp} IP: ${r.ip}
                             </li>`;
                         }
@@ -1214,7 +1376,8 @@
                     }
                     $(`#login-history-list-${examId}-${studentId} .card-body`).html(html);
                 },
-                error: function() {
+                error: function(xhr, status, error) {
+                    console.error(`Failed to load login history: ${status} - ${error}`, xhr.responseText);
                     $(`#login-history-list-${examId}-${studentId} .card-body`).html('<div class="text-danger">获取登录历史失败</div>');
                 }
             });
@@ -1286,8 +1449,8 @@
                     startAutoRefresh();
                 }
             });
-            // 修改刷新按钮为只刷新当前考试详情
-            $('.refresh-btn').off('click').on('click', function() { fetchData(false); });
+            // 修改刷新按钮为完全刷新数据
+            $('.refresh-btn').off('click').on('click', function() { fetchData(true); });
         });
     </script>
 </body>

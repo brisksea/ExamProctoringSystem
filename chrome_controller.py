@@ -45,7 +45,6 @@ class ChromeController:
         self.compiled_patterns = []
         self.allowed_urls = []
         if config_manager:
-            self.default_url = config_manager.get_default_url()
             patterns = config_manager.get_url_patterns()
             self.compiled_patterns = [re.compile(pattern) for pattern in patterns]
             self.allowed_urls = config_manager.get_allowed_urls() or []

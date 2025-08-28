@@ -21,11 +21,12 @@ class ApiClient:
         Args:
             server_url: 服务器URL，如果为None则需要在调用方法时提供
         """
+        self.server_ip = server_ip
         self.server_url = f'http://{server_ip}:5000'
         self.headers = {
             'Content-Type': 'application/json'
         }
-        self.timeout = 5  # 默认超时时间（秒）
+        self.timeout = 15  # 默认超时时间（秒），避免读取超时过早
 
     def set_server_url(self, server_ip: str) -> None:
         """
@@ -55,6 +56,7 @@ class ApiClient:
             "username": username
         }
 
+        print("login")
         try:
             # 发送登录请求
             response = requests.post(
@@ -64,7 +66,7 @@ class ApiClient:
                 timeout=self.timeout
             )
 
-            #print(response.text)
+            print(response.text)
 
             # 解析响应
             if response.status_code == 200:
@@ -95,6 +97,132 @@ class ApiClient:
         except requests.exceptions.RequestException as e:
             return False, {}, f"无法连接到服务器: {str(e)}"
 
+    def select_exam_login(self, username: str, exam_id: int) -> Tuple[bool, Dict[str, Any], str]:
+        """
+        用户选择考试后的登录
+
+        Args:
+            username: 用户名
+            exam_id: 选择的考试ID
+
+        Returns:
+            Tuple[bool, Dict[str, Any], str]: 是否成功, 响应数据, 错误消息
+        """
+        login_data = {
+            "username": username,
+            "exam_id": exam_id
+        }
+
+        try:
+            response = requests.post(
+                f"{self.server_url}/api/login/select_exam",
+                json=login_data,
+                headers=self.headers,
+                timeout=self.timeout
+            )
+
+            if response.status_code == 200:
+                login_response = response.json()
+                if login_response.get("status") == "success":
+                    return True, login_response, ""
+                else:
+                    error_message = login_response.get("message", "登录失败，请重试")
+                    return False, {}, error_message
+            else:
+                try:
+                    error_detail = response.json().get("message", "")
+                except Exception:
+                    error_detail = response.text
+                return False, {}, f"服务器返回错误: {error_detail}"
+
+        except requests.exceptions.RequestException as e:
+            return False, {}, f"无法连接到服务器: {str(e)}"
+
+    def get_student_name_by_id(self, student_id: str) -> Tuple[bool, str, str]:
+        """
+        通过学号获取学生姓名
+
+        Args:
+            student_id: 学号
+
+        Returns:
+            Tuple[bool, str, str]: 是否成功, 学生姓名, 错误消息
+        """
+        try:
+            response = requests.get(
+                f"{self.server_url}/api/students/{student_id}",
+                headers=self.headers,
+                timeout=self.timeout
+            )
+
+            if response.status_code == 200:
+                result = response.json()
+                if result.get("status") == "success":
+                    student_name = result.get("student_name", "")
+                    return True, student_name, ""
+                else:
+                    error_message = result.get("message", "未找到该学号对应的学生")
+                    return False, "", error_message
+            elif response.status_code == 404:
+                return False, "", "未找到该学号对应的学生"
+            else:
+                try:
+                    error_detail = response.json().get("message", "")
+                except Exception:
+                    error_detail = response.text
+                return False, "", f"服务器返回错误: {error_detail}"
+
+        except requests.exceptions.RequestException as e:
+            return False, "", f"无法连接到服务器: {str(e)}"
+
+    def login(self, student_id: str, student_name: str) -> Tuple[Optional[bool], Dict[str, Any], str]:
+        """
+        使用学号和姓名进行登录
+
+        Args:
+            student_id: 学号
+            student_name: 学生姓名
+
+        Returns:
+            Tuple[Optional[bool], Dict[str, Any], str]: 是否成功, 响应数据, 错误消息
+        """
+        login_data = {
+            "student_id": student_id,
+            "student_name": student_name
+        }
+
+        try:
+            response = requests.post(
+                f"{self.server_url}/api/login",
+                json=login_data,
+                headers=self.headers,
+                timeout=self.timeout
+            )
+
+            if response.status_code == 200:
+                login_response = response.json()
+                status = login_response.get("status")
+
+                if status == "success":
+                    return True, login_response, ""
+                elif status == "choice_required":
+                    data = {
+                        "exams": login_response.get("exams", []),
+                        "message": login_response.get("message", "")
+                    }
+                    return None, data, "choice_required"
+                else:
+                    error_message = login_response.get("message", "登录失败，请重试")
+                    return False, {}, error_message
+            else:
+                try:
+                    error_detail = response.json().get("message", "")
+                except Exception:
+                    error_detail = response.text
+                return False, {}, f"服务器返回错误: {error_detail}"
+
+        except requests.exceptions.RequestException as e:
+            return False, {}, f"无法连接到服务器: {str(e)}"
 
     def send_heartbeat(self, student_id: str, exam_id: str) -> Tuple[bool, str]:
         """

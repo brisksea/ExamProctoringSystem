@@ -37,6 +37,7 @@ class LoginWindow:
         self.root = root
         self.on_login_success = on_login_success
         self.server_ip = '10.188.2.252'
+        #self.server_ip = '127.0.0.1'
 
         # 设置窗口属性
         self.root.title("考试监控系统 - 登录")
@@ -76,16 +77,26 @@ class LoginWindow:
             info_label = tk.Label(main_frame, text="请输入您的信息以继续", font=("Arial", 10))
             info_label.pack(pady=5)
 
-            # 姓名输入框架
+            # 学号输入框架
+            student_id_frame = tk.Frame(main_frame)
+            student_id_frame.pack(fill=tk.X, pady=8)
+
+            student_id_label = tk.Label(student_id_frame, text="学号:", width=8)
+            student_id_label.pack(side=tk.LEFT, padx=5)
+
+            self.student_id_entry = tk.Entry(student_id_frame, width=25)
+            self.student_id_entry.pack(side=tk.LEFT, padx=5, fill=tk.X, expand=True)
+            self.student_id_entry.focus_set()  # 设置焦点
+
+            # 姓名显示框架
             name_frame = tk.Frame(main_frame)
             name_frame.pack(fill=tk.X, pady=8)
 
             name_label = tk.Label(name_frame, text="姓名:", width=8)
             name_label.pack(side=tk.LEFT, padx=5)
 
-            self.name_entry = tk.Entry(name_frame, width=25)
+            self.name_entry = tk.Entry(name_frame, width=25, state='readonly')
             self.name_entry.pack(side=tk.LEFT, padx=5, fill=tk.X, expand=True)
-            self.name_entry.focus_set()  # 设置焦点
 
             # 服务器地址输入框架
             server_frame = tk.Frame(main_frame)
@@ -106,28 +117,65 @@ class LoginWindow:
                                font=("Arial", 8), fg="#555555", justify=tk.CENTER)
             server_info.pack(pady=5)
 
-            # 自动模式提示
-            auto_info = tk.Label(main_frame, text="登录后将自动启动考试模式\n退出时将自动关闭考试模式",
-                               font=("Arial", 9), fg="#555555", justify=tk.CENTER)
-            auto_info.pack(pady=5)
+            # 状态提示
+            self.status_label = tk.Label(main_frame, text="请输入学号后按回车键或点击查询姓名",
+                                        font=("Arial", 9), fg="#555555", justify=tk.CENTER)
+            self.status_label.pack(pady=5)
+
+            # 按钮框架
+            button_frame = tk.Frame(main_frame)
+            button_frame.pack(pady=10)
+
+            # 查询姓名按钮
+            self.query_button = tk.Button(button_frame, text="查询姓名", command=self.query_student_name, width=12, height=2)
+            self.query_button.pack(side=tk.LEFT, padx=(0, 10))
 
             # 登录按钮
-            login_button = tk.Button(main_frame, text="登录", command=self.login, width=15, height=2)
-            login_button.pack(pady=10)
+            self.login_button = tk.Button(button_frame, text="登录", command=self.login, width=12, height=2, state='disabled')
+            self.login_button.pack(side=tk.LEFT)
 
-            # 绑定回车键
-            self.root.bind('<Return>', lambda _: self.login())
+            # 登录状态标记
+            self.login_step = 1  # 1: 查询姓名, 2: 确认登录
+            self.current_student_id = ""
+            self.current_student_name = ""
+
+            # 绑定事件
+            #self.student_id_entry.bind('<Return>', lambda _: self.query_student_name())
+            self.student_id_entry.bind('<KeyRelease>', self.on_student_id_change)
+            self.root.bind('<Return>', self.on_enter_key)
         except Exception as e:
             messagebox.showerror("界面初始化失败", f"错误信息: {e}")
             raise
 
-    def login(self):
-        """处理登录"""
-        username = self.name_entry.get().strip()
+    def on_student_id_change(self, event):
+        """学号输入框内容变化时的处理"""
+        student_id = self.student_id_entry.get().strip()
+        if not student_id:
+            # 清空姓名和重置状态
+            self.name_entry.config(state='normal')
+            self.name_entry.delete(0, tk.END)
+            self.name_entry.config(state='readonly')
+            self.login_button.config(state='disabled')
+            self.query_button.config(state='normal')
+            self.status_label.config(text="请输入学号后按回车键或点击查询姓名")
+            self.login_step = 1
+            self.current_student_id = ""
+            self.current_student_name = ""
+
+    def on_enter_key(self, event):
+        """处理回车键事件"""
+        if self.login_step == 1:
+            self.query_student_name()
+        elif self.login_step == 2:
+            self.login()
+
+    def query_student_name(self):
+        """查询学生姓名"""
+        student_id = self.student_id_entry.get().strip()
         server_ip = self.server_entry.get().strip()
 
-        if not username:
-            messagebox.showwarning("警告", "请输入您的姓名")
+        if not student_id:
+            messagebox.showwarning("警告", "请输入学号")
             return
 
         if not server_ip:
@@ -144,16 +192,77 @@ class LoginWindow:
         # 创建API客户端
         self.api_client = ApiClient(server_ip)
 
-        # 使用API客户端进行登录
-        success, login_data, error_message = self.api_client.login(username)
-        #print(success, login_data, error_message)
+        # 查询学生姓名
+        self.status_label.config(text="正在查询学生信息...")
+        self.query_button.config(state='disabled')
 
-        if success:
-            # 登录成功，传递用户名、服务器地址和login_data
-            self.on_login_success(username, self.api_client, login_data)
-        else:
-            # 登录失败，显示错误消息
-            messagebox.showerror("登录失败", error_message)
+        try:
+            success, student_name, error_message = self.api_client.get_student_name_by_id(student_id)
+
+            if success:
+                # 显示姓名
+                self.name_entry.config(state='normal')
+                self.name_entry.delete(0, tk.END)
+                self.name_entry.insert(0, student_name)
+                self.name_entry.config(state='readonly')
+
+                # 更新状态
+                self.current_student_id = student_id
+                self.current_student_name = student_name
+                self.login_step = 2
+                self.login_button.config(state='normal')
+                self.query_button.config(state='disabled')
+                self.status_label.config(text="请确认姓名无误后点击登录按钮")
+            else:
+                # 查询失败
+                messagebox.showerror("查询失败", error_message)
+                self.query_button.config(state='normal')
+                self.status_label.config(text="查询失败，请检查学号或网络连接")
+                # 让主窗口重新获得焦点
+                self.root.focus_force()
+                # 将光标定位到学号输入框
+                self.student_id_entry.delete(0, tk.END)
+                self.student_id_entry.focus_set()
+        except Exception as e:
+            messagebox.showerror("查询错误", f"查询过程中发生错误: {str(e)}")
+            self.query_button.config(state='normal')
+            self.status_label.config(text="查询失败，请重试")
+
+    def login(self):
+        """处理登录"""
+        if self.login_step != 2:
+            messagebox.showwarning("警告", "请先查询学生姓名")
+            return
+
+        if not self.current_student_id or not self.current_student_name:
+            messagebox.showwarning("警告", "学生信息不完整，请重新查询")
+            return
+
+        # 使用学号和姓名进行登录
+        self.status_label.config(text="正在登录...")
+        self.login_button.config(state='disabled')
+
+        try:
+            success, login_data, error_message = self.api_client.login(
+                self.current_student_id, self.current_student_name
+            )
+
+            if success:
+                # 登录成功
+                self.on_login_success(self.current_student_name, self.api_client, login_data)
+            elif success is None and error_message == "choice_required":
+                # 需要选择考试
+                self.show_exam_selection_with_student_info(login_data)
+            else:
+                # 登录失败
+                messagebox.showerror("登录失败", error_message)
+                self.login_button.config(state='normal')
+                self.status_label.config(text="登录失败，请重试")
+        except Exception as e:
+            messagebox.showerror("登录错误", f"登录过程中发生错误: {str(e)}")
+            self.login_button.config(state='normal')
+            self.status_label.config(text="登录失败，请重试")
+
 
     def on_close(self):
         self.root.destroy()
@@ -229,9 +338,10 @@ class ExamClient:
         self.disable_new_tabs = login_data.get("disable_new_tabs", False) if login_data else False
         self.delay_min = login_data.get("delay_min", 0) if login_data else 0
 
+        print(f"[DEBUG][on_login_success] login_data: {login_data}")
+
         # 检查关键信息
         if not self.exam_id or not self.student_id:
-            import tkinter.messagebox as messagebox
             messagebox.showerror("登录失败", "未获取到考试ID或学生ID，无法进入考试系统。请确认您的信息或联系管理员。")
             return
 
@@ -289,6 +399,7 @@ class ExamClient:
 
         # 启动Chrome浏览器
         try:
+            print(f"[DEBUG][on_login_success] chrome_start_url: {self.exam_default_url}")
             chrome_start_url = self.exam_default_url if self.exam_default_url else None
             self.chrome_controller = ChromeController(
                 config_manager=self.config_manager,
@@ -329,7 +440,7 @@ class ExamClient:
         self.connected_to_server = True
 
         # 开始心跳线程, 用定时发送截屏取代心跳
-        #self.start_heartbeat()
+        self.start_heartbeat()
 
         # 初始化停止按钮状态
         self.stop_button_initialized = False
@@ -339,6 +450,7 @@ class ExamClient:
 
         # 启动考试结束时间检查
         self.start_exam_end_time_check()
+
 
         # 登录成功后自动启动考试模式
         self.root.after(1000, self.start_monitoring)  # 延迟1秒启动，确保界面已完全加载
@@ -352,9 +464,6 @@ class ExamClient:
 
     def heartbeat_loop(self):
         """心跳循环，定期向服务器发送心跳"""
-        chrome_check_interval = 5  # 每5次心跳检查一次Chrome状态
-        check_count = 0
-
         while True:
             #print(f"[DEBUG][heartbeat_loop] before: connected_to_server={self.connected_to_server}, server_url={self.server_url}")
             if self.api_client:
@@ -601,7 +710,6 @@ class ExamClient:
             scrollbar.config(command=self.log_text.yview)
             '''
         except Exception as e:
-            import tkinter.messagebox as messagebox
             messagebox.showerror("界面初始化失败", f"错误信息: {e}")
             raise
 
@@ -611,6 +719,8 @@ class ExamClient:
         log_message = f"[{timestamp}] [用户: {self.username}] {message}"
         #self.log_text.insert(tk.END, log_message + "\n")
         #self.log_text.see(tk.END)
+
+        print(log_message)
 
         # 同时写入日志文件
         self.write_log(message)
@@ -674,11 +784,37 @@ class ExamClient:
         self.monitor_thread.daemon = True
         self.monitor_thread.start()
 
-        # 启动截图上传线程
-        self.screenshot_uploading = True
-        self.screenshot_thread = threading.Thread(target=self.screenshot_loop)
-        self.screenshot_thread.daemon = True
-        self.screenshot_thread.start()
+
+        # 初始化录屏管理器
+        try:
+            enable_screen_recording = self.config_manager.config.get("enable_screen_recording", True)
+            if enable_screen_recording:
+                from screen_recorder import ScreenRecorderManager
+                server_url = f"http://{self.api_client.server_ip}:5000"
+                self.screen_recorder = ScreenRecorderManager(
+                    server_url, 
+                    self.student_id, 
+                    self.exam_id,
+                    self.config_manager
+                )
+                self.screen_recorder.start()
+                self.log("录屏功能已启动（从服务器获取配置）")
+            else:
+                self.screen_recorder = None
+                self.log("服务器配置禁用了录屏功能")
+        except Exception as e:
+            self.log(f"启动录屏功能失败: {str(e)}")
+            self.screen_recorder = None
+
+        # 启动截图上传线程（根据服务器配置）
+        if self.config_manager.config.get("enable_screenshot_upload", True):
+            self.screenshot_uploading = True
+            self.screenshot_thread = threading.Thread(target=self.screenshot_loop)
+            self.screenshot_thread.daemon = True
+            self.screenshot_thread.start()
+        else:
+            self.screenshot_uploading = False
+            self.log("服务器配置禁用了定时截图上传")
 
     def stop_monitoring(self):
         """停止监控"""
@@ -686,6 +822,11 @@ class ExamClient:
             return
 
         self.monitoring = False
+
+        # 停止录屏
+        if hasattr(self, 'screen_recorder') and self.screen_recorder:
+            self.screen_recorder.stop()
+            self.log("录屏功能已停止")
 
         # 停止Chrome浏览器
         try:
@@ -742,8 +883,9 @@ class ExamClient:
                         # 记录到日志
                         self.log(f"警告：{err_msg}")
 
-                         # 显示警告
-                        self.show_warning("警告", err_msg, 5)
+                        # 根据配置决定是否显示警告窗口
+                        if self.config_manager.is_show_violation_warning_enabled():
+                            self.show_warning("警告", err_msg, 5)
 
                         if "未授权的URL" in err_msg:
                             self.chrome_controller.to_default_url()
@@ -860,6 +1002,11 @@ class ExamClient:
         if self.show_confirmation("确认", "您确定要结束考试并退出监控系统吗？"):
             self.log("用户选择结束考试")
 
+            # 停止录屏
+            if hasattr(self, 'screen_recorder') and self.screen_recorder:
+                self.screen_recorder.stop()
+                self.log("录屏功能已停止")
+
             # 停止监控
             if self.monitoring:
                 self.stop_monitoring()
@@ -877,6 +1024,7 @@ class ExamClient:
         """窗口关闭事件"""
         # 提示用户使用结束考试按钮
         if self.show_confirmation("确认", "您确定要结束考试并退出监控系统吗？"):
+
             # 如果监控正在运行，先停止监控
             if hasattr(self, 'monitoring') and self.monitoring:
                 self.stop_monitoring()
@@ -1305,7 +1453,6 @@ def check_time_sync(api_client, log_func):
             local_time = datetime.now()
             diff = abs((local_time - server_time).total_seconds())
             if diff > 120:
-                import tkinter.messagebox as messagebox
                 messagebox.showwarning(
                     "时间不同步",
                     "检测到您的电脑时间与服务器时间相差超过2分钟。\n"
