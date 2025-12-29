@@ -902,8 +902,7 @@ class ExamClient:
                                     print(f"结束未授权前台进程时出错: {str(e)}")
                         elif "获取标签页句柄时出错" in err_msg:
                             self.show_warning("警告", "获取标签页句柄时出错，浏览器将重新启动", 5)
-                            self.driver.quit()
-                            self.chrome_controller.start()
+                            self.chrome_controller.restart()
                             
                             
                 except Exception as e:

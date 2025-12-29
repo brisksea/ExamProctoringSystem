@@ -568,9 +568,10 @@ class ScreenRecorderManager:
 
             self.logger.info(f"正在上传视频文件: {os.path.basename(video_path)} ({file_size} bytes)")
 
-            # 准备上传数据
+            # 准备上传数据 - 使用真正的流式上传
             with open(video_path, 'rb') as f:
-                files = {'video': f}
+                # 使用requests的流式上传
+                files = {'video': (os.path.basename(video_path), f, 'video/mp4')}
                 data = {
                     'student_id': self.student_id,
                     'exam_id': self.exam_id,
@@ -579,12 +580,13 @@ class ScreenRecorderManager:
                     'quality': video_info['quality']
                 }
 
-                # 发送到服务器
+                # 发送到服务器 - 使用流式上传和更长的超时时间
                 response = requests.post(
                     f"{self.server_url}/api/screen_recording",
                     files=files,
                     data=data,
-                    timeout=60
+                    timeout=600,  # 10分钟超时，与服务器端保持一致
+                    stream=True   # 启用流式传输
                 )
 
             if response.status_code == 200:

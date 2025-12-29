@@ -1,0 +1,591 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>考试监控</title>
+    <link href="/static/css/bootstrap.min.css" rel="stylesheet">
+    <link href="/static/css/bootstrap-icons.css" rel="stylesheet">
+    <style>
+        body {
+            padding: 20px;
+            background-color: #f8f9fa;
+        }
+        .container {
+            max-width: 1400px;
+        }
+        .card {
+            margin-bottom: 20px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        }
+        .student-card {
+            border-left: 4px solid #0d6efd;
+        }
+        .student-offline {
+            opacity: 0.6;
+            border-left: 4px solid #dc3545 !important;
+            background-color: #f8d7da;
+        }
+        .student-online {
+            border-left: 4px solid #198754 !important;
+        }
+        .violation-item {
+            background: #fff;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            margin-bottom: 1rem;
+            padding: 1rem;
+        }
+        .violation-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 0.5rem;
+            padding-bottom: 0.5rem;
+            border-bottom: 1px solid #eee;
+        }
+        .student-name {
+            font-size: 1.2rem;
+            font-weight: bold;
+            color: #dc3545;
+        }
+        .violation-time {
+            font-size: 0.9rem;
+            color: #6c757d;
+        }
+        .violation-reason {
+            font-size: 1.1rem;
+            color: #333;
+            background: #fff3cd;
+            padding: 0.5rem;
+            border-radius: 4px;
+            border-left: 4px solid #ffc107;
+        }
+        .violation-content img {
+            width: 100%;
+            border-radius: 4px;
+            cursor: pointer;
+            transition: transform 0.2s;
+        }
+        .violation-content img:hover {
+            transform: scale(1.02);
+        }
+        .badge-status {
+            font-size: 0.8em;
+        }
+        .status-online {
+            background-color: #198754;
+        }
+        .status-offline {
+            background-color: #dc3545;
+            color: #fff;
+        }
+        .status-end {
+            background-color: #9f8789;
+            color: #fff;
+        }
+        #new-violation-toast {
+            position: fixed;
+            top: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 10000;
+            min-width: 250px;
+            background: #dc3545;
+            color: white;
+            padding: 15px 30px;
+            border-radius: 8px;
+            box-shadow: 0 6px 16px rgba(220, 53, 69, 0.5);
+            font-size: 18px;
+            font-weight: bold;
+            display: none;
+            text-align: center;
+        }
+        #new-violation-toast.show {
+            display: block;
+            animation: slideDown 0.3s ease-out;
+        }
+        @keyframes slideDown {
+            from {
+                transform: translateX(-50%) translateY(-100px);
+                opacity: 0;
+            }
+            to {
+                transform: translateX(-50%) translateY(0);
+                opacity: 1;
+            }
+        }
+        .exam-info-card {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+        }
+        .exam-info-card h3 {
+            margin: 0;
+        }
+        .exam-info-item {
+            margin: 5px 0;
+        }
+    </style>
+</head>
+<body>
+    <div id="new-violation-toast"></div>
+    
+    <div class="container">
+        <header class="d-flex justify-content-between align-items-center mb-4 pb-3 border-bottom">
+            <div>
+                <h1 class="h2">🔒 考试监控</h1>
+                <p class="text-muted mb-0">监控模式 - 仅查看权限</p>
+            </div>
+            <div>
+                <span id="current-time" class="me-3"></span>
+                <button class="btn btn-sm btn-outline-secondary refresh-btn">
+                    <i class="bi bi-arrow-clockwise"></i> 刷新
+                </button>
+                <a href="/" class="btn btn-sm btn-outline-danger ms-2">退出</a>
+            </div>
+        </header>
+
+        <div id="last-updated" class="mb-3">上次更新: <span id="update-time"></span></div>
+
+        <!-- 考试信息卡片 -->
+        <div class="card exam-info-card mb-4">
+            <div class="card-body">
+                <h3 id="exam-name">加载中...</h3>
+                <div class="exam-info-item">
+                    <i class="bi bi-calendar-event"></i>
+                    开始时间: <span id="exam-start-time"></span>
+                </div>
+                <div class="exam-info-item">
+                    <i class="bi bi-calendar-check"></i>
+                    结束时间: <span id="exam-end-time"></span>
+                </div>
+                <div class="exam-info-item">
+                    <i class="bi bi-info-circle"></i>
+                    状态: <span id="exam-status" class="badge bg-light text-dark"></span>
+                </div>
+            </div>
+        </div>
+
+        <div class="row">
+            <!-- 学生列表 -->
+            <div class="col-md-4">
+                <div class="card">
+                    <div class="card-header d-flex justify-content-between align-items-center">
+                        <h5 class="mb-0">学生列表</h5>
+                        <span id="student-count" class="badge bg-primary">0</span>
+                    </div>
+                    <div class="card-body p-0" style="max-height: calc(100vh - 400px); overflow-y: auto;">
+                        <ul id="student-list" class="list-group list-group-flush">
+                            <li class="list-group-item text-center text-muted">加载中...</li>
+                        </ul>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 异常记录 -->
+            <div class="col-md-8">
+                <div class="card">
+                    <div class="card-header d-flex justify-content-between align-items-center">
+                        <h5 class="mb-0">异常记录</h5>
+                        <span id="violation-count" class="badge bg-danger">0</span>
+                    </div>
+                    <div class="card-body">
+                        <div id="violations-container" style="max-height: calc(100vh - 400px); overflow-y: auto;">
+                            <div class="text-center text-muted">加载中...</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 学生截图弹窗 -->
+    <div class="modal fade" id="studentScreenshotModal" tabindex="-1">
+        <div class="modal-dialog modal-lg">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">学生截图</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <div id="screenshot-container"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 大图弹窗 -->
+    <div class="modal fade" id="bigScreenshotModal" tabindex="-1">
+        <div class="modal-dialog modal-dialog-centered modal-xl">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">查看大图</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body text-center"></div>
+            </div>
+        </div>
+    </div>
+
+    <script src="/static/js/jquery-3.6.0.min.js"></script>
+    <script src="/static/js/bootstrap.bundle.min.js"></script>
+    <script>
+        const examId = {{ exam_id }};
+        let lastTotalViolationCount = 0;
+        let autoRefreshTimer = null;
+        const REMOTE_SERVER = 'http://10.188.2.252:5000';
+
+        function updateCurrentTime() {
+            document.getElementById('current-time').textContent = new Date().toLocaleString();
+        }
+
+        function formatChineseDateTime(dateTimeStr) {
+            if (!dateTimeStr) return '';
+            try {
+                const date = new Date(dateTimeStr);
+                if (isNaN(date.getTime())) return dateTimeStr;
+                const year = date.getFullYear();
+                const month = date.getMonth() + 1;
+                const day = date.getDate();
+                const hour = date.getHours();
+                const minute = date.getMinutes();
+                return `${year}年${month}月${day}日${hour}时${minute.toString().padStart(2, '0')}分`;
+            } catch (error) {
+                return dateTimeStr;
+            }
+        }
+
+        function showNewViolationToast(count) {
+            const toast = $('#new-violation-toast');
+            toast.text(`⚠️ 新增 ${count} 条异常记录`);
+            toast.addClass('show');
+            setTimeout(() => toast.removeClass('show'), 3000);
+        }
+
+        function fetchData() {
+            // 获取考试信息
+            $.ajax({
+                url: `/api/exams/${examId}`,
+                method: 'GET',
+                success: function(response) {
+                    if (response.status === 'success') {
+                        const exam = response.exam;
+                        $('#exam-name').text(exam.name);
+                        $('#exam-start-time').text(formatChineseDateTime(exam.start_time));
+                        $('#exam-end-time').text(formatChineseDateTime(exam.end_time));
+                        const statusMap = {'pending': '未开始', 'active': '进行中', 'completed': '已结束'};
+                        $('#exam-status').text(statusMap[exam.status] || exam.status);
+                    }
+                }
+            });
+
+            // 获取学生列表
+            $.ajax({
+                url: `/api/exams/${examId}/students`,
+                method: 'GET',
+                success: function(students) {
+                    renderStudents(students);
+                }
+            });
+
+            // 获取违规记录
+            $.ajax({
+                url: `/api/exams/${examId}/violations`,
+                method: 'GET',
+                success: function(response) {
+                    const violations = response.violations || [];
+                    const total = response.total || 0;
+                    $('#violation-count').text(total);
+
+                    if (lastTotalViolationCount > 0 && total > lastTotalViolationCount) {
+                        showNewViolationToast(total - lastTotalViolationCount);
+                    }
+                    lastTotalViolationCount = total;
+
+                    renderViolations(violations);
+                }
+            });
+
+            $('#update-time').text(new Date().toLocaleString());
+        }
+
+        function renderStudents(students) {
+            const studentList = $('#student-list');
+            studentList.empty();
+
+            const onlineCount = students.filter(s => s.status === 'online').length;
+            const totalCount = students.length;
+            const loginCount = students.filter(s => s.login_time).length;
+            $('#student-count').text(`在线: ${onlineCount} / 已登录: ${loginCount} / 总计: ${totalCount}`);
+
+            if (students.length === 0) {
+                studentList.html('<li class="list-group-item text-center text-muted">暂无学生</li>');
+                return;
+            }
+
+            // 按状态排序：掉线(1) → 退出(2) → 未登录(3) → 在线(4)
+            students.sort((a, b) => {
+                const priority = (s) => {
+                    if (s.status === 'offline') return 1;   // 掉线第一
+                    if (s.status === 'logout') return 2;    // 退出第二
+                    if (s.status === 'inactive') return 3;  // 未登录第三
+                    if (s.status === 'online') return 4;    // 正常在线最后
+                    return 5;
+                };
+                return priority(a) - priority(b);
+            });
+
+            students.forEach(student => {
+                let statusClass = '';
+                let statusBadge = '';
+                let extraStyle = '';
+
+                if (student.status === 'online') {
+                    statusClass = 'student-online';
+                    statusBadge = '<span class="badge status-online badge-status">在线</span>';
+                } else if (student.status === 'offline') {
+                    statusClass = 'student-offline';
+                    statusBadge = '<span class="badge status-offline badge-status">掉线</span>';
+                    extraStyle = 'background-color: #f3f3f3 !important;';
+                } else if (student.status === 'logout') {
+                    statusBadge = '<span class="badge status-end badge-status">已结束</span>';
+                }
+
+                if (student.login_count > 3) {
+                    extraStyle = 'background-color: #fff9c4 !important;';
+                }
+
+                const html = `
+                    <li class="list-group-item student-card ${statusClass}" style="${extraStyle}" id="student-item-${student.student_id}">
+                        <div class="d-flex justify-content-between align-items-start">
+                            <div>
+                                <div class="fw-bold">
+                                    ${student.student_name} ${statusBadge}
+                                </div>
+                                <div class="small text-muted">学号: ${student.student_id}</div>
+                                <div class="small text-muted">IP: ${student.ip || '未知'}</div>
+                                <div class="small text-muted">${student.login_time ? '登录: ' + student.login_time : ''}</div>
+                                ${student.logout_time ? `<div class="small text-danger">结束: ${student.logout_time}</div>` : ''}
+                            </div>
+                            <div>
+                                <div class="d-flex gap-1 mb-2">
+                                    <button class="btn btn-sm btn-outline-primary"
+                                            onclick="showStudentScreenshots('${student.exam_id}','${student.student_id}','${student.student_name}')"
+                                            title="媒体: ${student.media_count || 0}个">
+                                        <i class="bi bi-camera-video"></i> ${student.media_count || 0}
+                                    </button>
+                                    <button class="btn btn-sm btn-outline-secondary login-history-btn"
+                                            type="button"
+                                            data-bs-toggle="collapse"
+                                            data-bs-target="#login-history-list-${student.exam_id}-${student.student_id}"
+                                            data-exam-id="${student.exam_id}"
+                                            data-student-id="${student.student_id}"
+                                            aria-expanded="false"
+                                            title="登录/退出历史">
+                                        <i class="bi bi-clock-history"></i> ${student.login_history_count || 0}
+                                    </button>
+                                </div>
+                                <div class="collapse" id="login-history-list-${student.exam_id}-${student.student_id}">
+                                    <div class="card card-body p-2" style="background:#f8f9fa;">
+                                        <div class="text-muted">加载中...</div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </li>`;
+                studentList.append(html);
+            });
+
+            // 设置登录历史展开/收起事件监听
+            setupLoginHistoryListeners();
+        }
+
+        // 设置登录历史展开/收起事件监听
+        function setupLoginHistoryListeners() {
+            // 移除之前的事件监听器，避免重复绑定
+            $('#student-list').off('show.bs.collapse', '[id^="login-history-list-"]');
+
+            // 只在展开时加载数据
+            $('#student-list').on('show.bs.collapse', '[id^="login-history-list-"]', function(e) {
+                const collapseId = $(this).attr('id');
+                const parts = collapseId.replace('login-history-list-', '').split('-');
+                const examId = parts[0];
+                const studentId = parts[1];
+
+                console.log(`Login history expanding for exam ${examId}, student ${studentId}`);
+                loadStudentLoginHistory(examId, studentId);
+            });
+        }
+
+        // 加载学生登录历史
+        function loadStudentLoginHistory(examId, studentId) {
+            console.log(`Loading login history for exam ${examId}, student ${studentId}`);
+            $.ajax({
+                url: `/api/exams/${examId}/students/${studentId}/logins`,
+                method: 'GET',
+                success: function(records) {
+                    console.log(`Received ${records.length} login records:`, records);
+                    let html = '';
+                    if (records.length === 0) {
+                        html = '<div class="text-muted">暂无登录/退出记录</div>';
+                    } else {
+                        html += '<ul class="list-group list-group-flush">';
+                        for (let i = 0; i < records.length; i++) {
+                            const r = records[i];
+                            let bgStyle = '';
+                            // 检查上一次为logout，这次为login，且间隔大于1分钟
+                            if (i > 0 && r.type === 'login' && records[i-1].type === 'logout') {
+                                const prev = records[i-1];
+                                const t1 = new Date(prev.timestamp).getTime();
+                                const t2 = new Date(r.timestamp).getTime();
+                                if (t2 - t1 > 60 * 1000) {
+                                    bgStyle = 'background-color:#ffcccc;';
+                                }
+                            }
+                            // 根据不同的状态类型设置不同的样式和文本
+                            let badgeClass = 'secondary';
+                            let statusText = '未知';
+                            switch(r.type) {
+                                case 'login':
+                                    badgeClass = 'success';
+                                    statusText = '登录';
+                                    break;
+                                case 'logout':
+                                    badgeClass = 'danger';
+                                    statusText = '退出';
+                                    break;
+                                case 'online':
+                                    badgeClass = 'info';
+                                    statusText = '上线';
+                                    break;
+                                case 'offline':
+                                    badgeClass = 'warning';
+                                    statusText = '断线';
+                                    break;
+                                default:
+                                    badgeClass = 'secondary';
+                                    statusText = r.type;
+                            }
+                            html += `<li class="list-group-item py-1 px-2" style="${bgStyle}">
+                                <span class="badge bg-${badgeClass}">${statusText}</span>
+                                时间: ${r.timestamp} IP: ${r.ip}
+                            </li>`;
+                        }
+                        html += '</ul>';
+                    }
+                    $(`#login-history-list-${examId}-${studentId} .card-body`).html(html);
+                },
+                error: function(xhr, status, error) {
+                    console.error(`Failed to load login history: ${status} - ${error}`, xhr.responseText);
+                    $(`#login-history-list-${examId}-${studentId} .card-body`).html('<div class="text-danger">获取登录历史失败</div>');
+                }
+            });
+        }
+
+        function renderViolations(violations) {
+            const container = $('#violations-container');
+            container.empty();
+
+            if (violations.length === 0) {
+                container.html('<div class="text-center text-muted">暂无异常记录</div>');
+                return;
+            }
+
+            violations.forEach(v => {
+                const item = $(`
+                    <div class="violation-item">
+                        <div class="violation-header">
+                            <span class="student-name">${v.username}</span>
+                            <span class="violation-time">${v.timestamp}</span>
+                        </div>
+                        <div class="violation-content">
+                            <div class="violation-reason">${v.reason}</div>
+                            <img src="${v.screenshot_url}" onclick="showBigScreenshot('${v.screenshot_url}')">
+                        </div>
+                    </div>
+                `);
+                container.append(item);
+            });
+        }
+
+        function showBigScreenshot(url) {
+            $('#bigScreenshotModal .modal-body').html(`<img src="${url}" class="img-fluid">`);
+            $('#bigScreenshotModal').modal('show');
+        }
+
+        function showStudentScreenshots(examId, studentId, username) {
+            $('#studentScreenshotModal .modal-body').html(`
+                <h5 class='mb-3'>${username} 的截图/录屏</h5>
+                <div id="screenshot-container"><div class="text-center"><div class="spinner-border"></div><p>加载中...</p></div></div>
+            `);
+            $('#studentScreenshotModal').modal('show');
+
+            $.get(`/api/exams/${examId}/students/${studentId}/recordings`)
+                .done(function(data) {
+                    let recordings = data.recordings || [];
+                    if (recordings.length > 0) {
+                        renderMedia(recordings, true);
+                    } else {
+                        loadScreenshots(examId, studentId);
+                    }
+                })
+                .fail(function() {
+                    loadScreenshots(examId, studentId);
+                });
+        }
+
+        function loadScreenshots(examId, studentId) {
+            $.get(`/api/exams/${examId}/students/${studentId}/screenshots`)
+                .done(function(data) {
+                    let screenshots = data.screenshots || [];
+                    if (screenshots.length > 0) {
+                        renderMedia(screenshots, false);
+                    } else {
+                        $('#screenshot-container').html('<div class="text-muted">暂无截图或录屏</div>');
+                    }
+                })
+                .fail(function() {
+                    $('#screenshot-container').html('<div class="text-danger">加载失败</div>');
+                });
+        }
+
+        function renderMedia(items, isVideo) {
+            const container = $('#screenshot-container');
+            container.empty();
+
+            items.forEach(item => {
+                if (isVideo) {
+                    const url = item.download_url;
+                    container.append(`
+                        <div class="mb-3">
+                            <video controls width="100%" src="${url}"></video>
+                            <div class="text-muted">${item.filename}</div>
+                            <a href="${url}" class="btn btn-sm btn-outline-primary mt-1" target="_blank">下载</a>
+                        </div>
+                    `);
+                } else {
+                    container.append(`
+                        <div class="mb-3">
+                            <img src="${item}" class="img-fluid" onclick="showBigScreenshot('${item}')">
+                        </div>
+                    `);
+                }
+            });
+        }
+
+        function startAutoRefresh() {
+            if (autoRefreshTimer) clearInterval(autoRefreshTimer);
+            autoRefreshTimer = setInterval(fetchData, 15000);
+        }
+
+        $(document).ready(function() {
+            updateCurrentTime();
+            setInterval(updateCurrentTime, 1000);
+            fetchData();
+            startAutoRefresh();
+            $('.refresh-btn').on('click', fetchData);
+        });
+    </script>
+</body>
+</html>

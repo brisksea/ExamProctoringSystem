@@ -1,0 +1,1976 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>考试监控系统服务器</title>
+    <link href="/static/css/bootstrap.min.css" rel="stylesheet">
+    <link href="/static/css/bootstrap-icons.css" rel="stylesheet">
+    <style>
+        body {
+            padding: 20px;
+            background-color: #f8f9fa;
+        }
+        .container {
+            max-width: 1200px;
+        }
+        .card {
+            margin-bottom: 20px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        }
+        .student-card {
+            border-left: 4px solid #0d6efd;
+        }
+        .student-offline {
+            opacity: 0.6;
+            border-left: 4px solid #dc3545 !important;
+            background-color: #f8d7da;
+        }
+        .student-inactive {
+            border-left: 4px solid #ffc107;
+        }
+        .violation-card {
+            border-left: 4px solid #dc3545;
+        }
+        .screenshot-container {
+            max-height: 300px;
+            overflow: hidden;
+            margin-bottom: 10px;
+        }
+        .screenshot-container img {
+            max-width: 100%;
+            object-fit: contain;
+        }
+        .timestamp {
+            font-size: 0.8em;
+            color: #6c757d;
+        }
+        .badge-status {
+            font-size: 0.8em;
+        }
+        .status-online {
+            background-color: #198754;
+        }
+        .status-offline {
+            background-color: #dc3545;
+            color: #fff;
+        }
+        .status-inactive {
+            background-color: #ffc107;
+            color: #000;
+        }
+        .status-end {
+            background-color:rgb(168, 155, 115);
+            color: #000;
+        }
+        #logo {
+            height: 40px;
+            margin-right: 10px;
+        }
+        .refresh-btn {
+            cursor: pointer;
+        }
+        #last-updated {
+            font-size: 0.8em;
+            color: #6c757d;
+            margin-bottom: 20px;
+        }
+        .exam-card {
+            cursor: pointer;
+            transition: all 0.3s ease;
+            border: 2px solid transparent;
+        }
+        .exam-card:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 12px rgba(0, 0, 0, 0.15);
+        }
+        .exam-card.selected {
+            border-color: #0d6efd;
+            box-shadow: 0 0 0 0.25rem rgba(13, 110, 253, 0.25);
+            transform: translateY(-2px);
+        }
+        .exam-active {
+            border-left: 4px solid #198754;
+            background-color: #fff9c4 !important;
+        }
+        .exam-pending {
+            border-left: 4px solid #ffc107;
+        }
+        .exam-completed {
+            border-left: 4px solid #6c757d;
+        }
+        .student-online {
+            border-left: 4px solid #198754 !important;
+        }
+        .student-offline {
+            border-left: 4px solid #dc3545 !important;
+            background-color: #f8d7da;
+            opacity: 0.8;
+        }
+        .badge-status {
+            font-size: 0.8em;
+        }
+        .status-online {
+            background-color: #198754;
+        }
+        .status-offline {
+            background-color: #dc3545;
+        }
+        .status-end {
+            background-color: #9f8789;
+            color: #fff;
+        }
+
+        /* 考试卡片样式 */
+        .card-footer {
+            background-color: rgba(0, 0, 0, 0.03);
+            padding: 0.5rem 1rem;
+            border-top: 1px solid rgba(0, 0, 0, 0.125);
+        }
+
+        /* 删除按钮样式 */
+        .btn-danger {
+            transition: all 0.2s ease;
+        }
+
+        .btn-danger:hover:not([disabled]) {
+            transform: scale(1.05);
+        }
+
+        .btn-danger[disabled] {
+            cursor: not-allowed;
+            opacity: 0.5;
+        }
+
+        /* 瀑布流布局样式 */
+        .masonry-container {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 1rem;
+            padding: 1rem;
+        }
+        @media (max-width: 1200px) {
+            .masonry-container {
+                grid-template-columns: repeat(2, 1fr);
+            }
+        }
+        @media (max-width: 768px) {
+            .masonry-container {
+                grid-template-columns: 1fr;
+            }
+        }
+        .masonry-item {
+            break-inside: avoid;
+            margin-bottom: 1rem;
+            page-break-inside: avoid;
+        }
+        .masonry-item img {
+            width: 100%;
+            height: auto;
+            display: block;
+            border-radius: 4px;
+            cursor: pointer;
+            transition: transform 0.2s;
+        }
+        .masonry-item img:hover {
+            transform: scale(1.02);
+        }
+        .masonry-item .timestamp {
+            margin-top: 0.5rem;
+            font-size: 0.8rem;
+            color: #6c757d;
+        }
+        .loading-spinner {
+            text-align: center;
+            padding: 1rem;
+            display: none;
+        }
+        .loading-spinner.active {
+            display: block;
+        }
+
+        /* 模态框滚动样式 */
+        .modal-body {
+            max-height: 70vh;
+            overflow-y: auto;
+        }
+        .modal-body::-webkit-scrollbar {
+            width: 8px;
+        }
+        .modal-body::-webkit-scrollbar-track {
+            background: #f1f1f1;
+            border-radius: 4px;
+        }
+        .modal-body::-webkit-scrollbar-thumb {
+            background: #888;
+            border-radius: 4px;
+        }
+        .modal-body::-webkit-scrollbar-thumb:hover {
+            background: #555;
+        }
+
+        /* 违规记录容器样式 */
+        #violations-container {
+            max-height: calc(100vh - 300px);
+            overflow-y: auto;
+            padding: 1rem;
+        }
+        #violations-container::-webkit-scrollbar {
+            width: 8px;
+        }
+        #violations-container::-webkit-scrollbar-track {
+            background: #f1f1f1;
+            border-radius: 4px;
+        }
+        #violations-container::-webkit-scrollbar-thumb {
+            background: #888;
+            border-radius: 4px;
+        }
+        #violations-container::-webkit-scrollbar-thumb:hover {
+            background: #555;
+        }
+
+        /* 违规记录样式 */
+        .violation-item {
+            background: #fff;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            margin-bottom: 1rem;
+            padding: 1rem;
+        }
+        .violation-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 0.5rem;
+            padding-bottom: 0.5rem;
+            border-bottom: 1px solid #eee;
+        }
+        .student-name {
+            font-size: 1.2rem;
+            font-weight: bold;
+            color: #dc3545;
+        }
+        .violation-time {
+            font-size: 0.9rem;
+            color: #6c757d;
+        }
+        .violation-content {
+            display: flex;
+            flex-direction: column;
+            gap: 0.5rem;
+        }
+        .violation-reason {
+            font-size: 1.1rem;
+            color: #333;
+            background: #fff3cd;
+            padding: 0.5rem;
+            border-radius: 4px;
+            border-left: 4px solid #ffc107;
+        }
+        .violation-content img {
+            width: 100%;
+            border-radius: 4px;
+            cursor: pointer;
+            transition: transform 0.2s;
+        }
+        .violation-content img:hover {
+            transform: scale(1.02);
+        }
+
+        /* 新增异常记录提示 */
+        #new-violation-toast {
+            position: fixed;
+            top: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 10000;
+            min-width: 250px;
+            background: #dc3545;
+            color: white;
+            padding: 15px 30px;
+            border-radius: 8px;
+            box-shadow: 0 6px 16px rgba(220, 53, 69, 0.5);
+            font-size: 18px;
+            font-weight: bold;
+            display: none;
+            text-align: center;
+        }
+
+        #new-violation-toast.show {
+            display: block;
+            animation: slideDown 0.3s ease-out;
+        }
+
+        @keyframes slideDown {
+            from {
+                transform: translateX(-50%) translateY(-100px);
+                opacity: 0;
+            }
+            to {
+                transform: translateX(-50%) translateY(0);
+                opacity: 1;
+            }
+        }
+    </style>
+</head>
+<body>
+    <!-- 新增异常记录提示 -->
+    <div id="new-violation-toast"></div>
+
+    <div class="container">
+        <header class="d-flex justify-content-between align-items-center mb-4 pb-3 border-bottom">
+            <div class="d-flex align-items-center">
+                <img src="https://cdn-icons-png.flaticon.com/512/1584/1584961.png" alt="Logo" id="logo">
+                <h1 class="h2">考试监控系统</h1>
+            </div>
+            <div>
+                <span id="current-time"></span>
+                <button class="btn btn-primary ms-2" data-bs-toggle="modal" data-bs-target="#createExamModal">
+                    创建考试
+                </button>
+                <a class="btn btn-sm btn-outline-secondary ms-2 refresh-btn">
+                    <i class="bi bi-arrow-clockwise"></i> 刷新数据
+                </a>
+                <label class="ms-3" style="user-select:none;">
+                    <input type="checkbox" id="stop-auto-refresh" style="vertical-align:middle;"> 停止自动刷新
+                </label>
+            </div>
+        </header>
+
+        <div id="last-updated">上次更新: <span id="update-time"></span></div>
+
+        <!-- 考试列表 -->
+        <div class="row mb-4">
+            <div class="col-12">
+                <div class="card">
+                    <div class="card-header">
+                        <h5 class="mb-0">考试列表</h5>
+                    </div>
+                    <div class="card-body">
+                        <div id="exam-list" class="row g-3">
+                            <!-- 考试卡片将通过JavaScript动态添加 -->
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 考试详情 -->
+        <div class="row" id="exam-details" style="display: none;">
+            <!-- 学生列表 -->
+            <div class="col-md-4">
+                <div class="card">
+                    <div class="card-header d-flex justify-content-between align-items-center">
+                        <h5 class="mb-0">学生列表</h5>
+                        <div>
+                            <span id="student-count" class="badge bg-primary">0</span>
+                            <button class="btn btn-sm btn-outline-primary ms-2" onclick="$('#importStudentsModal').modal('show')">
+                                导入学生
+                            </button>
+                        </div>
+                    </div>
+                    <div class="card-body p-0">
+                        <ul id="student-list" class="list-group list-group-flush">
+                            <li class="list-group-item text-center text-muted">请选择考试...</li>
+                        </ul>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 异常记录 -->
+            <div class="col-md-8">
+                <div class="card">
+                    <div class="card-header d-flex justify-content-between align-items-center">
+                        <h5 class="mb-0">异常记录</h5>
+                        <span id="violation-count" class="badge bg-danger">0</span>
+                    </div>
+                    <div class="card-body">
+                        <div id="violations-container">
+                            <div class="masonry-container"></div>
+                            <div class="loading-spinner">
+                                <div class="spinner-border" role="status"></div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 创建考试模态框 -->
+    <div class="modal fade" id="createExamModal" tabindex="-1">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">创建新考试</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <form id="createExamForm">
+                        <div class="mb-3">
+                            <label class="form-label">考试名称</label>
+                            <input type="text" class="form-control" name="name" required>
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label">开始时间</label>
+                            <input type="datetime-local" class="form-control" name="start_time" required>
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label">结束时间</label>
+                            <input type="datetime-local" class="form-control" name="end_time" required>
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label">监控生效延时(分钟)</label>
+                            <input type="number" class="form-control" name="delay_min" min="0" value="0">
+                            <div class="form-text">考试开始后延迟多少分钟开始监控，0为立即生效</div>
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label">默认网站（可选）</label>
+                            <input type="text" class="form-control" name="default_url" placeholder="如 https://pintia.com">
+                            <div class="form-text">本场考试专用，留空则使用全局配置</div>
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label">浏览器设置</label>
+                            <div class="form-check">
+                                <input class="form-check-input" type="checkbox" id="disable_new_tabs" name="disable_new_tabs">
+                                <label class="form-check-label" for="disable_new_tabs">
+                                    禁止浏览器多标签页
+                                </label>
+                                <div class="form-text">启用后，学生只能使用单个标签页浏览</div>
+                            </div>
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label">监控密码（可选）</label>
+                            <input type="text" class="form-control" name="monitor_password" placeholder="留空表示不设置监控密码">
+                            <div class="form-text">
+                                设置后，可使用此密码登录查看本场考试的监控页面（仅查看，无管理权限）<br>
+                                <strong>提示：</strong>监控密码只需在<strong>时间重叠</strong>的考试之间不重复
+                            </div>
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label">学生名单（每行"学号 姓名"）</label>
+                            <textarea class="form-control" name="student_list_text" rows="6" placeholder="2023001 张三&#10;2023002 李四&#10;2023003 王五"></textarea>
+                            <div class="form-text">每行一个学生，学号和姓名用空格分隔</div>
+                        </div>
+                    </form>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+                    <button type="button" class="btn btn-primary" onclick="createExam()">创建</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 导入学生模态框 -->
+    <div class="modal fade" id="importStudentsModal" tabindex="-1">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">导入学生名单</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <form id="importStudentsForm">
+                        <!-- 选项卡导航 -->
+                        <ul class="nav nav-tabs mb-3" id="importTabs" role="tablist">
+                            <li class="nav-item" role="presentation">
+                                <button class="nav-link active" id="text-tab" data-bs-toggle="tab" data-bs-target="#text-import" type="button" role="tab">文本输入</button>
+                            </li>
+                            <li class="nav-item" role="presentation">
+                                <button class="nav-link" id="file-tab" data-bs-toggle="tab" data-bs-target="#file-import" type="button" role="tab">文件上传</button>
+                            </li>
+                        </ul>
+
+                        <!-- 选项卡内容 -->
+                        <div class="tab-content" id="importTabContent">
+                            <!-- 文本输入方式 -->
+                            <div class="tab-pane fade show active" id="text-import" role="tabpanel">
+                                <div class="mb-3">
+                                    <label class="form-label">学生名单（每行"学号 姓名"）</label>
+                                    <textarea class="form-control" name="student_list_text" rows="8" placeholder="2023001 张三&#10;2023002 李四&#10;2023003 王五"></textarea>
+                                    <div class="form-text">每行一个学生，学号和姓名用空格分隔</div>
+                                </div>
+                            </div>
+
+                            <!-- 文件上传方式 -->
+                            <div class="tab-pane fade" id="file-import" role="tabpanel">
+                                <div class="mb-3">
+                                    <label class="form-label">选择文本文件</label>
+                                    <input type="file" class="form-control" name="student_list_file" accept=".txt">
+                                    <div class="form-text">支持txt文本文件，每行格式："学号 姓名"</div>
+                                </div>
+                            </div>
+                        </div>
+                    </form>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+                    <button type="button" class="btn btn-primary" onclick="importStudents()">导入</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 编辑考试模态框 -->
+    <div class="modal fade" id="editExamModal" tabindex="-1">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">编辑考试信息</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <form id="editExamForm">
+                        <input type="hidden" id="edit-exam-id" name="exam_id">
+                        <div class="mb-3">
+                            <label class="form-label">考试名称</label>
+                            <input type="text" class="form-control" name="name" id="edit-exam-name" required>
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label">开始时间</label>
+                            <input type="datetime-local" class="form-control" name="start_time" id="edit-exam-start-time" required>
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label">结束时间</label>
+                            <input type="datetime-local" class="form-control" name="end_time" id="edit-exam-end-time" required>
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label">监控生效延时(分钟)</label>
+                            <input type="number" class="form-control" name="delay_min" id="edit-exam-delay-min" min="0" value="0">
+                            <div class="form-text">考试开始后延迟多少分钟开始监控，0为立即生效</div>
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label">默认网站（可选）</label>
+                            <input type="text" class="form-control" name="default_url" id="edit-exam-default-url" placeholder="如 https://pintia.com">
+                            <div class="form-text">本场考试专用，留空则使用全局配置</div>
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label">浏览器设置</label>
+                            <div class="form-check">
+                                <input class="form-check-input" type="checkbox" id="edit-exam-disable-new-tabs" name="disable_new_tabs">
+                                <label class="form-check-label" for="edit-exam-disable-new-tabs">
+                                    禁止浏览器多标签页
+                                </label>
+                                <div class="form-text">启用后，学生只能使用单个标签页浏览</div>
+                            </div>
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label">监控密码（可选）</label>
+                            <input type="text" class="form-control" name="monitor_password" id="edit-exam-monitor-password" placeholder="留空表示不设置监控密码">
+                            <div class="form-text">
+                                设置后，可使用此密码登录查看本场考试的监控页面（仅查看，无管理权限）<br>
+                                <strong>提示：</strong>监控密码只需在<strong>时间重叠</strong>的考试之间不重复
+                            </div>
+                        </div>
+                    </form>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+                    <button type="button" class="btn btn-primary" onclick="updateExam()">保存修改</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 删除考试确认模态框 -->
+    <div class="modal fade" id="deleteExamModal" tabindex="-1">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">确认删除</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <p>您确定要删除考试 "<span id="delete-exam-name"></span>" 吗？</p>
+                    <p class="text-danger">此操作不可逆，将删除所有相关的学生数据和违规记录。</p>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+                    <button type="button" class="btn btn-danger" id="confirm-delete-btn">删除</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 删除学生确认模态框 -->
+    <div class="modal fade" id="deleteStudentModal" tabindex="-1">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">确认删除学生</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <p>您确定要删除学生 "<span id="delete-student-name"></span>" 吗？</p>
+                    <p class="text-danger">此操作不可逆，将删除该学生的所有数据、截图和录屏文件。</p>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+                    <button type="button" class="btn btn-danger" id="confirm-delete-student-btn">删除</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 学生截图弹窗 -->
+    <div class="modal fade" id="studentScreenshotModal" tabindex="-1">
+        <div class="modal-dialog modal-lg">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">学生截图</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <div class="masonry-container"></div>
+                    <div class="loading-spinner">
+                        <div class="spinner-border" role="status"></div>
+                        <p class="mt-2">加载中...</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    <!-- 大图弹窗 -->
+    <div class="modal fade" id="bigScreenshotModal" tabindex="-1">
+        <div class="modal-dialog modal-dialog-centered modal-xl">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">查看大图</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body text-center">
+                    <!-- 大图内容由JS填充 -->
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 学生登录历史弹窗 -->
+    <div class="modal fade" id="studentLoginHistoryModal" tabindex="-1">
+        <div class="modal-dialog modal-lg">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">学生登录/退出历史</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <!-- 登录历史内容由JS填充 -->
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Bootstrap & jQuery JS -->
+    <script src="/static/js/jquery-3.6.0.min.js"></script>
+    <script src="/static/js/bootstrap.bundle.min.js"></script>
+
+    <script>
+        let currentExamId = null;
+        let autoRefreshTimer = null;
+
+        // 添加违规截图缓存
+        let loadedViolationScreenshots = new Set();
+        let lastViolationCount = 0;
+        let lastTotalViolationCount = 0;  // 用于检测新增违规记录
+
+        // 显示新增异常记录提示
+        function showNewViolationToast(count) {
+            console.log(`[Toast] 检测到新增 ${count} 条异常记录`);
+            const toast = $('#new-violation-toast');
+            toast.text(`⚠️ 新增 ${count} 条异常记录`);
+            toast.addClass('show');
+
+            // 3秒后自动隐藏
+            setTimeout(function() {
+                toast.removeClass('show');
+            }, 3000);
+        }
+
+        // 添加违规截图分页相关变量
+        let currentViolationPage = 1;
+        let hasMoreViolations = true;
+        let isLoadingViolations = false;
+        const VIOLATIONS_PER_PAGE = 12;
+
+        // 格式化时间为中文格式：xx年xx月xx日xx时xx分
+        function formatChineseDateTime(dateTimeStr) {
+            if (!dateTimeStr) return '';
+
+            try {
+                // 处理不同的时间格式
+                let date;
+                if (dateTimeStr.includes('T')) {
+                    // ISO格式：2024-01-15T14:30:00
+                    date = new Date(dateTimeStr);
+                } else if (dateTimeStr.includes('-') && dateTimeStr.includes(' ')) {
+                    // 标准格式：2024-01-15 14:30:00
+                    date = new Date(dateTimeStr);
+                } else {
+                    // 其他格式
+                    date = new Date(dateTimeStr);
+                }
+
+                if (isNaN(date.getTime())) {
+                    return dateTimeStr; // 如果解析失败，返回原字符串
+                }
+
+                const year = date.getFullYear();
+                const month = date.getMonth() + 1;
+                const day = date.getDate();
+                const hour = date.getHours();
+                const minute = date.getMinutes();
+
+                return `${year}年${month}月${day}日${hour}时${minute.toString().padStart(2, '0')}分`;
+            } catch (error) {
+                console.error('时间格式化错误:', error, dateTimeStr);
+                return dateTimeStr; // 如果出错，返回原字符串
+            }
+        }
+
+        // 更新当前时间
+        function updateCurrentTime() {
+            const now = new Date();
+            document.getElementById('current-time').textContent = now.toLocaleString();
+        }
+
+        // 获取数据
+        function fetchData(full = true) {
+            // 获取考试列表
+            $.ajax({
+                url: '/api/exams',
+                method: 'GET',
+                success: function(exams) {
+                    renderExams(exams);
+                }
+            });
+
+            // 如果已选择考试，更新考试详情
+            // full=false时增量刷新（插入顶部），full=true时完全重新加载
+            if (currentExamId) {
+                fetchExamDetails(currentExamId, full);
+            }
+
+            // 更新刷新时间
+            const now = new Date();
+            $('#update-time').text(now.toLocaleString());
+        }
+
+        // 渲染考试列表
+        function renderExams(exams) {
+            const examList = $('#exam-list');
+            examList.empty();
+
+            exams.forEach(exam => {
+                const card = $(`
+                    <div class="col-md-4 mb-3">
+                        <div class="card exam-card exam-${exam.status}" data-exam-id="${exam.id}">
+                            <div class="card-body" onclick="selectExam(${exam.id})">
+                                <h5 class="card-title">${exam.name}</h5>
+                                <p class="card-text">
+                                    开始: ${formatChineseDateTime(exam.start_time)}<br>
+                                    结束: ${formatChineseDateTime(exam.end_time)}<br>
+                                    状态: ${getStatusText(exam.status)}<br>
+                                    ${exam.default_url ? `<span class='text-muted'>默认网址: <a style='color:#1976d2;' href=${exam.default_url} target="_blank">${exam.default_url}</a></span><br>` : ''}
+                                    ${exam.delay_min && exam.delay_min > 0 ? `<span class='text-muted'>监控延时: <span style='color:#fbc02d;'>${exam.delay_min} 分钟</span></span><br>` : ''}
+                                    ${exam.disable_new_tabs ? `<span class='text-muted'>浏览器设置: <span style='color:#f44336;'>禁止多标签页</span></span><br>` : ''}
+                                </p>
+                            </div>
+                            <div class="card-footer d-flex justify-content-end gap-2">
+                                ${exam.status === 'completed' ? `
+                                <button class="btn btn-sm btn-outline-success" onclick="copyExam(event, ${exam.id})" title="基于此考试创建新考试">
+                                    <i class="bi bi-copy"></i> 复制
+                                </button>
+                                ` : ''}
+                                <button class="btn btn-sm btn-outline-primary" onclick="editExam(event, ${exam.id})" title="编辑考试信息">
+                                    <i class="bi bi-pencil"></i> 编辑
+                                </button>
+                                <button class="btn btn-sm btn-danger" onclick="confirmDeleteExam(event, ${exam.id}, '${exam.name}')" ${exam.status === 'active' ? 'disabled' : ''}>
+                                    <i class="bi bi-trash"></i> 删除
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                `);
+                examList.append(card);
+            });
+
+            // 如果有当前选中的考试，恢复其选中状态
+            if (currentExamId) {
+                $(`.exam-card[data-exam-id="${currentExamId}"]`).addClass('selected');
+            }
+        }
+
+        // 选择考试
+        function selectExam(examId) {
+            // 移除所有考试卡片的选中状态
+            $('.exam-card').removeClass('selected');
+            // 为当前选中的考试卡片添加选中状态
+            $(`.exam-card[data-exam-id="${examId}"]`).addClass('selected');
+
+            currentExamId = examId;
+            $('#exam-details').show();
+            // 重置违规截图缓存
+            loadedViolationScreenshots.clear();
+            lastViolationCount = 0;
+            lastTotalViolationCount = 0;  // 重置总数计数器
+            currentViolationPage = 1;
+            hasMoreViolations = true;
+            isLoadingViolations = false;
+            // 首次选择考试，完全重新加载
+            fetchExamDetails(currentExamId, true);
+            setupViolationScroll();
+        }
+
+        // 获取考试详情
+        function fetchExamDetails(examId, fullReload = false) {
+            // 获取学生列表
+            $.ajax({
+                url: `/api/exams/${examId}/students`,
+                method: 'GET',
+                success: function(students) {
+                    renderStudents(students);
+                }
+            });
+
+            // 获取违规记录
+            $.ajax({
+                url: `/api/exams/${examId}/violations`,
+                method: 'GET',
+                success: function(response) {
+                    const violations = response.violations || [];
+                    const total = response.total || 0;
+
+                    console.log(`[Violations] 当前总数: ${total}, 上次总数: ${lastTotalViolationCount}`);
+
+                    // 更新违规记录统计数字
+                    $('#violation-count').text(total);
+
+                    // 检测新增异常记录并显示提示（不是首次加载时）
+                    if (lastTotalViolationCount > 0 && total > lastTotalViolationCount) {
+                        const newCount = total - lastTotalViolationCount;
+                        console.log(`[Violations] 发现新增 ${newCount} 条异常记录`);
+                        showNewViolationToast(newCount);
+                    } else {
+                        console.log(`[Violations] 无新增异常记录`);
+                    }
+                    lastTotalViolationCount = total;
+
+                    // fullReload=true时完全重新加载，否则增量刷新（插入顶部）
+                    const mode = fullReload ? 'replace' : 'prepend';
+                    renderViolations(violations, mode);
+                }
+            });
+        }
+
+        // 创建考试
+        function createExam() {
+            const form = $('#createExamForm');
+            const formData = new FormData();
+
+            // 获取表单数据
+            const name = form.find('[name="name"]').val();
+            const start_time = form.find('[name="start_time"]').val();
+            const end_time = form.find('[name="end_time"]').val();
+            const default_url = form.find('[name="default_url"]').val();
+            const delay_min = form.find('[name="delay_min"]').val();
+            const disable_new_tabs = form.find('[name="disable_new_tabs"]').is(':checked');
+            const monitor_password = form.find('[name="monitor_password"]').val();
+            const studentListText = form.find('[name="student_list_text"]').val();
+
+            // 验证必填字段
+            if (!name || !start_time || !end_time) {
+                alert('请填写所有必填字段');
+                return;
+            }
+
+            // 添加到 FormData
+            formData.append('name', name);
+            formData.append('start_time', start_time);
+            formData.append('end_time', end_time);
+            if (default_url) formData.append('default_url', default_url);
+            if (delay_min) formData.append('delay_min', delay_min);
+            formData.append('disable_new_tabs', disable_new_tabs);
+            if (monitor_password) formData.append('monitor_password', monitor_password);
+            if (studentListText) formData.append('student_list_text', studentListText);
+
+            // 添加学生名单文件（如果有）
+            const fileInput = form.find('[name="student_list"]')[0];
+            if (fileInput && fileInput.files.length > 0) {
+                formData.append('student_list', fileInput.files[0]);
+            }
+
+            $.ajax({
+                url: '/api/exams',
+                method: 'POST',
+                data: formData,
+                processData: false,  // 不处理数据
+                contentType: false,  // 不设置内容类型
+                success: function(response) {
+                    $('#createExamModal').modal('hide');
+                    form[0].reset();
+                    fetchData();
+                    alert(response.message);
+                },
+                error: function(xhr) {
+                    alert('创建考试失败: ' + (xhr.responseJSON?.message || '未知错误'));
+                }
+            });
+        }
+
+        // 获取状态文本
+        function getStatusText(status) {
+            const statusMap = {
+                'pending': '未开始',
+                'active': '进行中',
+                'completed': '已结束'
+            };
+            return statusMap[status] || status;
+        }
+
+        // 渲染学生列表
+        function renderStudents(students) {
+            const studentList = $('#student-list');
+            studentList.empty();
+
+            // 计算各种状态的学生数量
+            const onlineCount = students.filter(s => s.status === 'online').length;
+            const totalCount = students.length;
+            const loginCount = students.filter(s => s.login_time).length;
+            $('#student-count').text(`在线: ${onlineCount} / 已登录: ${loginCount} / 总计: ${totalCount}`);
+
+            if (students.length === 0) {
+                studentList.html('<li class="list-group-item text-center text-muted">暂无在线学生</li>');
+                // 更新lastStudentStatusMap为空
+                if (window.lastStudentStatusMap !== undefined) {
+                    window.lastStudentStatusMap = {};
+                }
+                return;
+            }
+
+            // 按状态排序：掉线(1) → 退出(2) → 未登录(3) → 在线(4)
+            students.sort((a, b) => {
+                const getStatusPriority = (student) => {
+                    if (student.status === 'offline') return 1;   // 掉线第一
+                    if (student.status === 'logout') return 2;    // 退出第二
+                    if (student.status === 'inactive') return 3;  // 未登录第三
+                    if (student.status === 'online') return 4;    // 正常在线最后
+                    return 5;
+                };
+                const priorityA = getStatusPriority(a);
+                const priorityB = getStatusPriority(b);
+                if (priorityA !== priorityB) {
+                    return priorityA - priorityB;
+                }
+                // 同状态按登录时间倒序
+                if (a.login_time && b.login_time) {
+                    return new Date(b.login_time) - new Date(a.login_time);
+                } else if (a.login_time) {
+                    return -1;
+                } else if (b.login_time) {
+                    return 1;
+                } else {
+                    return new Date(b.created_at || 0) - new Date(a.created_at || 0);
+                }
+            });
+
+            let extraStyle = '';
+            students.forEach(student => {
+                extraStyle = '';
+                let statusClass = '';
+                let statusBadge = '';
+
+                if (student.status === 'online') {
+                    statusBadge = '<span class="badge status-online badge-status">在线</span>';
+                } else if (student.status === 'inactive') {
+                    statusClass = 'student-inactive';
+                    statusBadge = '<span class="badge status-inactive badge-status">未登录</span>';
+                } else if (student.status === 'logout') {
+                    statusClass = 'student-end';
+                    statusBadge = '<span class="badge status-end badge-status">已结束考试</span>';
+                    extraStyle = '';
+                } else if (student.status === 'offline') {
+                    statusClass = 'student-offline';
+                    statusBadge = '<span class="badge status-offline badge-status">掉线</span>';
+                    extraStyle = 'background-color: #f3f3f3 !important;';
+                } else {
+                    statusClass = 'student-offline';
+                    statusBadge = '<span class="badge status-offline badge-status">' + student.status + '</span>';
+                    extraStyle = '';
+                }
+
+                // 新增：如果登录历史超过3条，添加黄色背景
+                if (student.login_count > 3) {
+                    extraStyle = 'background-color: #fff9c4 !important;'; // 浅黄色
+                }
+
+                let studentInfoHtml = `
+                    <li class="list-group-item d-flex justify-content-between align-items-center student-card ${statusClass}" style="${extraStyle}" id="student-item-${student.student_id}">
+                        <div>
+                            <div class="fw-bold">
+                                <span title="学号: ${student.student_id}" style="cursor: help;">${student.student_name}</span>
+                                <span id="student-status-${student.student_id}">${statusBadge}</span>
+                            </div>
+                            <div class="small text-muted" id="student-ip-${student.student_id}">IP: ${student.ip || '未知'}</div>
+                            <div class="timestamp" id="student-login-${student.student_id}">${student.login_time ? `登录: ${student.login_time}` : ''}</div>
+                            <div class="timestamp text-danger" id="student-logout-${student.student_id}">${student.logout_time ? `结束考试: ${student.logout_time}` : ''}</div>
+                        </div>
+                        <div>
+                            <div class="d-flex gap-1 mb-2">
+                                <button class="btn btn-sm btn-outline-primary"
+                                        onclick="showStudentScreenshots('${student.exam_id}','${student.student_id}','${student.student_name}')"
+                                        title="截图: ${student.screenshot_count || 0}个, 录屏: ${student.recording_count || 0}个">
+                                    <i class="bi bi-camera-video"></i> <span class="badge ${(student.media_count || 0) > 0 ? 'bg-success' : 'bg-secondary'}">${student.media_count || 0}</span>
+                                </button>
+                                <button class="btn btn-sm btn-outline-secondary login-history-btn" type="button"
+                                        data-bs-toggle="collapse"
+                                        data-bs-target="#login-history-list-${student.exam_id}-${student.student_id}"
+                                        data-exam-id="${student.exam_id}"
+                                        data-student-id="${student.student_id}"
+                                        aria-expanded="false"
+                                        aria-controls="login-history-list-${student.exam_id}-${student.student_id}"
+                                        onclick="event.stopPropagation();"
+                                        title="登录/退出历史">
+                                    <i class="bi bi-clock-history"></i> <span id="login-history-count-${student.exam_id}-${student.student_id}">${student.login_history_count || 0}</span>
+                                </button>
+                                <button class="btn btn-sm btn-outline-danger"
+                                        onclick="confirmDeleteStudent(event, '${student.exam_id}', '${student.student_id}', '${student.student_name}')"
+                                        title="删除学生">
+                                    <i class="bi bi-trash"></i>
+                                </button>
+                            </div>
+                            <div class="collapse" id="login-history-list-${student.exam_id}-${student.student_id}">
+                                <div class="card card-body p-2" style="background:#f8f9fa;">
+                                    <div class="text-muted">加载中...</div>
+                                </div>
+                            </div>
+                        </div>
+                    </li>`;
+                studentList.append(studentInfoHtml);
+            });
+            // --- 这里更新lastStudentStatusMap ---
+            if (window.lastStudentStatusMap !== undefined) {
+                window.lastStudentStatusMap = {};
+                students.forEach(s => {
+                    window.lastStudentStatusMap[s.student_id] = {
+                        status: s.status,
+                        login_time: s.login_time,
+                        logout_time: s.logout_time,
+                        login_count: s.login_count,
+                        login_history_count: s.login_history_count,
+                        screenshot_count: s.screenshot_count,
+                        recording_count: s.recording_count,
+                        media_count: s.media_count
+                    };
+                });
+            }
+
+            // 设置登录历史展开/收起事件监听
+            setupLoginHistoryListeners();
+        }
+
+        // 设置登录历史展开/收起事件监听
+        function setupLoginHistoryListeners() {
+            // 移除之前的事件监听器，避免重复绑定
+            $('#student-list').off('show.bs.collapse', '[id^="login-history-list-"]');
+
+            // 只在展开时加载数据
+            $('#student-list').on('show.bs.collapse', '[id^="login-history-list-"]', function(e) {
+                const collapseId = $(this).attr('id');
+                const parts = collapseId.replace('login-history-list-', '').split('-');
+                const examId = parts[0];
+                const studentId = parts[1];
+
+                console.log(`Login history expanding for exam ${examId}, student ${studentId}`);
+                loadStudentLoginHistory(examId, studentId);
+            });
+        }
+
+        // 添加分页相关的变量
+        let currentScreenshotPage = 1;
+        let hasMoreScreenshots = true;
+        let isLoadingScreenshots = false;
+
+        // 远程服务器地址
+        const REMOTE_SERVER = 'http://10.188.2.252:5000';
+
+        // 查看考生截图弹窗
+        function showStudentScreenshots(examId, studentId, username) {
+            console.log(`Loading media for student: ${studentId}, exam: ${examId}`);
+
+            // 显示加载中的模态框
+            $('#studentScreenshotModal .modal-body').html(`
+                <h5 class='mb-3'>${username} 的截图/录屏</h5>
+                <div class="masonry-container"></div>
+                <div class="loading-spinner">
+                    <div class="spinner-border" role="status"></div>
+                    <p class="mt-2">加载中...</p>
+                </div>
+            `);
+            $('#studentScreenshotModal').modal('show');
+
+            // 尝试从本地和远程服务器获取录屏
+            tryGetRecordings(examId, studentId, username);
+        }
+
+        // 尝试从本地和远程获取录屏
+        function tryGetRecordings(examId, studentId, username) {
+            console.log('尝试从本地获取录屏...');
+
+            $.get(`/api/exams/${examId}/students/${studentId}/recordings`)
+                .done(function(data) {
+                    console.log('本地录屏API响应:', data);
+                    let recordings = data.recordings || [];
+                    if (recordings.length > 0) {
+                        console.log(`本地找到 ${recordings.length} 个录屏文件`);
+                        renderRecordings(recordings);
+                    } else {
+                        console.log('本地无录屏，尝试远程服务器...');
+                        tryGetRemoteRecordings(examId, studentId, username);
+                    }
+                })
+                .fail(function(xhr, status, error) {
+                    console.error('本地录屏API错误:', xhr.status, error);
+                    console.log('本地查询失败，尝试远程服务器...');
+                    tryGetRemoteRecordings(examId, studentId, username);
+                });
+        }
+
+        // 尝试从远程服务器获取录屏
+        function tryGetRemoteRecordings(examId, studentId, username) {
+            console.log('尝试从远程服务器获取录屏...');
+
+            $.get(`${REMOTE_SERVER}/api/exams/${examId}/students/${studentId}/recordings`)
+                .done(function(data) {
+                    console.log('远程录屏API响应:', data);
+                    let recordings = data.recordings || [];
+                    if (recordings.length > 0) {
+                        console.log(`远程找到 ${recordings.length} 个录屏文件`);
+                        // 需要将URL转换为远程服务器的URL
+                        recordings = recordings.map(r => ({
+                            ...r,
+                            download_url: r.download_url.startsWith('http') ? r.download_url : `${REMOTE_SERVER}${r.download_url}`
+                        }));
+                        renderRecordings(recordings);
+                    } else {
+                        console.log('远程无录屏，尝试获取截图...');
+                        tryGetScreenshots(examId, studentId, username);
+                    }
+                })
+                .fail(function(xhr, status, error) {
+                    console.error('远程录屏API错误:', xhr.status, error);
+                    console.log('远程查询失败，尝试获取截图...');
+                    tryGetScreenshots(examId, studentId, username);
+                });
+        }
+
+        // 尝试从本地和远程获取截图
+        function tryGetScreenshots(examId, studentId, username) {
+            console.log('尝试从本地获取截图...');
+
+            $.get(`/api/exams/${examId}/students/${studentId}/screenshots`)
+                .done(function(data) {
+                    console.log('本地截图API响应:', data);
+                    let screenshots = data.screenshots || [];
+                    if (screenshots.length > 0) {
+                        console.log(`本地找到 ${screenshots.length} 个截图`);
+                        renderScreenshots(screenshots);
+                    } else {
+                        console.log('本地无截图，尝试远程服务器...');
+                        tryGetRemoteScreenshots(examId, studentId, username);
+                    }
+                })
+                .fail(function(xhr, status, error) {
+                    console.error('本地截图API错误:', xhr.status, error);
+                    console.log('本地查询失败，尝试远程服务器...');
+                    tryGetRemoteScreenshots(examId, studentId, username);
+                });
+        }
+
+        // 尝试从远程服务器获取截图
+        function tryGetRemoteScreenshots(examId, studentId, username) {
+            console.log('尝试从远程服务器获取截图...');
+
+            $.get(`${REMOTE_SERVER}/api/exams/${examId}/students/${studentId}/screenshots`)
+                .done(function(data) {
+                    console.log('远程截图API响应:', data);
+                    let screenshots = data.screenshots || [];
+                    if (screenshots.length > 0) {
+                        console.log(`远程找到 ${screenshots.length} 个截图`);
+                        // 需要将URL转换为远程服务器的URL
+                        screenshots = screenshots.map(s => s.startsWith('http') ? s : `${REMOTE_SERVER}${s}`);
+                        renderScreenshots(screenshots);
+                    } else {
+                        console.log('远程也无截图');
+                        $('#studentScreenshotModal .masonry-container').html('<div class="text-muted">本地和远程服务器均无截图或录屏</div>');
+                        $('.loading-spinner').hide();
+                    }
+                })
+                .fail(function(xhr, status, error) {
+                    console.error('远程截图API错误:', xhr.status, error);
+                    $('#studentScreenshotModal .masonry-container').html(`<div class="text-danger">本地和远程服务器均无法获取媒体文件</div>`);
+                    $('.loading-spinner').hide();
+                });
+        }
+
+        function renderScreenshots(screenshots) {
+            console.log('Rendering screenshots:', screenshots);
+            const masonryContainer = $('#studentScreenshotModal .masonry-container');
+            masonryContainer.empty();
+
+            screenshots.forEach((s, index) => {
+                console.log(`Adding screenshot ${index + 1}: ${s}`);
+                masonryContainer.append(`<div class="masonry-item"><img src="${s}" class="img-fluid" loading="lazy" onclick="showBigScreenshot('${s}')" style="cursor: pointer;" onerror="console.error('Failed to load image: ${s}')"></div>`);
+            });
+
+            $('.loading-spinner').hide();
+        }
+
+        function renderRecordings(recordings) {
+            console.log('Rendering recordings:', recordings);
+            const masonryContainer = $('#studentScreenshotModal .masonry-container');
+            masonryContainer.empty();
+
+            recordings.forEach((r, index) => {
+                console.log(`Adding recording ${index + 1}:`, r);
+                let typeLabel = r.type === 'merged' ? '合并录屏' : '录屏片段';
+                let downloadText = r.type === 'merged' ? '下载合并录屏' : '下载片段';
+                let buttonClass = r.type === 'merged' ? 'success' : 'primary';
+
+                masonryContainer.append(`
+                    <div class="masonry-item">
+                        <video controls width="100%" preload="metadata" class="lazy-video" data-src="${r.download_url}" onerror="console.error('Failed to load video: ${r.download_url}')">
+                            您的浏览器不支持视频播放
+                        </video>
+                        <div class="timestamp">
+                            ${r.filename} (${typeLabel})
+                        </div>
+                        <a href="${r.download_url}" target="_blank" class="btn btn-sm btn-outline-${buttonClass} mt-1">${downloadText}</a>
+                    </div>
+                `);
+            });
+
+            setupVideoLazyLoading();
+            $('.loading-spinner').hide();
+        }
+
+        function renderMergedRecordings(merged) {
+            const masonryContainer = $('#studentScreenshotModal .masonry-container');
+            masonryContainer.empty();
+            merged.forEach(r => {
+                masonryContainer.append(`
+                    <div class="masonry-item">
+                        <video controls width="100%" preload="metadata" class="lazy-video" data-src="${r.download_url}"></video>
+                        <div class="timestamp">${r.filename}</div>
+                        <a href="${r.download_url}" target="_blank" class="btn btn-sm btn-outline-success mt-1">下载合并录屏</a>
+                    </div>
+                `);
+            });
+            setupVideoLazyLoading();
+        }
+
+
+        // 懒加载可见区域内的视频
+        let __videoObserver;
+        function setupVideoLazyLoading() {
+            const videos = document.querySelectorAll('#studentScreenshotModal .masonry-container video.lazy-video[data-src]');
+            if (!('IntersectionObserver' in window)) {
+                // 兼容性降级：直接加载首屏视频
+                videos.forEach(v => {
+                    if (!v.src && v.dataset.src) {
+                        v.src = v.dataset.src;
+                        v.removeAttribute('data-src');
+                        v.classList.remove('lazy-video');
+                    }
+                });
+                return;
+            }
+            
+            // 清理之前的观察器
+            if (__videoObserver) {
+                __videoObserver.disconnect();
+            }
+            
+            __videoObserver = new IntersectionObserver((entries) => {
+                entries.forEach(entry => {
+                    if (entry.isIntersecting) {
+                        const v = entry.target;
+                        if (!v.src && v.dataset.src) {
+                            console.log('Loading video:', v.dataset.src);
+                            v.src = v.dataset.src;
+                            v.removeAttribute('data-src');
+                            v.classList.remove('lazy-video');
+                            // 触发视频加载
+                            v.load();
+                        }
+                        __videoObserver.unobserve(v);
+                    }
+                });
+            }, { 
+                root: document.querySelector('#studentScreenshotModal .modal-body'), 
+                rootMargin: '200px 0px', // 提前200px开始加载
+                threshold: 0.01 
+            });
+            
+            videos.forEach(v => {
+                if (v.dataset && v.dataset.src) {
+                    __videoObserver.observe(v);
+                }
+            });
+        }
+
+        // 设置截图滚动监听
+        function setupScreenshotScroll(examId, studentId, username) {
+            const modalBody = $('#studentScreenshotModal .modal-body');
+            
+            modalBody.off('scroll').on('scroll', function() {
+                if (isLoadingScreenshots || !hasMoreScreenshots) return;
+                
+                const container = $(this);
+                const scrollTop = container.scrollTop();
+                const scrollHeight = container[0].scrollHeight;
+                const clientHeight = container[0].clientHeight;
+                
+                // 当滚动到距离底部100px时加载更多
+                if (scrollHeight - scrollTop - clientHeight < 100) {
+                    currentScreenshotPage++;
+                    loadScreenshots(examId, studentId, username, currentScreenshotPage);
+                }
+            });
+        }
+
+        // 查看大图
+        function showBigScreenshot(url) {
+            $('#bigScreenshotModal .modal-body').html(`<img src="${url}" class="img-fluid">`);
+            $('#bigScreenshotModal').modal('show');
+        }
+
+        // 渲染异常记录
+        // mode: 'replace'=完全替换, 'prepend'=插入顶部(刷新), 'append'=追加底部(加载更多)
+        function renderViolations(violations, mode = 'replace') {
+            const container = $('#violations-container');
+
+            // 只在完全替换时清空容器
+            if (mode === 'replace') {
+                container.empty();
+                loadedViolationScreenshots.clear();  // 清空缓存
+                lastViolationCount = 0;
+            }
+
+            // 收集新的违规记录
+            const newItems = [];
+            // 对于prepend模式（新增记录），不使用懒加载以确保立即显示
+            const useLazyLoading = (mode === 'append' || mode === 'replace');
+            const loadingAttr = useLazyLoading ? 'loading="lazy"' : '';
+
+            violations.forEach(v => {
+                if (!loadedViolationScreenshots.has(v.screenshot_url)) {
+                    const item = $(`
+                        <div class="violation-item">
+                            <div class="violation-header">
+                                <span class="student-name" style="font-size: 1.2rem; font-weight: bold; color: #dc3545;">${v.username}</span>
+                                <span class="violation-time">${v.timestamp}</span>
+                            </div>
+                            <div class="violation-content">
+                                <div class="violation-reason" style="font-size: 1.1rem; background-color: #fff3cd; border-left: 4px solid #ffc107; padding: 0.5rem; border-radius: 0.25rem; color: #333;">${v.reason}</div>
+                                <img src="${v.screenshot_url}" alt="违规截图"
+                                    onclick="showBigScreenshot('${v.screenshot_url}')"
+                                    ${loadingAttr}>
+                        </div>
+                    </div>
+                `);
+                    newItems.push(item);
+                    loadedViolationScreenshots.add(v.screenshot_url);
+                }
+            });
+
+            // 根据模式决定如何插入新记录
+            if (mode === 'prepend' && newItems.length > 0) {
+                // 刷新：新记录插入到顶部（逆序插入保持时间顺序）
+                for (let i = newItems.length - 1; i >= 0; i--) {
+                    container.prepend(newItems[i]);
+                }
+            } else {
+                // 首次加载或加载更多：直接追加到底部
+                newItems.forEach(item => container.append(item));
+            }
+
+            // 更新已加载的违规记录数量
+            lastViolationCount += newItems.length;
+
+            // 检查是否还有更多违规记录
+            hasMoreViolations = violations.length === VIOLATIONS_PER_PAGE;
+
+            // 更新加载状态
+            isLoadingViolations = false;
+
+            // 如果还有更多违规记录，显示加载提示（仅在首次加载时）
+            if (hasMoreViolations && mode === 'replace') {
+                container.append('<div class="loading-spinner">加载中...</div>');
+            }
+        }
+
+        // 设置违规记录滚动监听
+        function setupViolationScroll() {
+            const violationsContainer = $('#violations-container');
+            
+            violationsContainer.off('scroll').on('scroll', function() {
+                if (isLoadingViolations || !hasMoreViolations || !currentExamId) return;
+                
+                const container = $(this);
+                const scrollTop = container.scrollTop();
+                const scrollHeight = container[0].scrollHeight;
+                const clientHeight = container[0].clientHeight;
+                
+                // 当滚动到距离底部100px时加载更多
+                if (scrollHeight - scrollTop - clientHeight < 100) {
+                    loadMoreViolations();
+                }
+            });
+        }
+
+        // 加载更多违规记录
+        function loadMoreViolations() {
+            if (isLoadingViolations || !hasMoreViolations || !currentExamId) return;
+
+            isLoadingViolations = true;
+            currentViolationPage++;
+
+            $.ajax({
+                url: `/api/exams/${currentExamId}/violations`,
+                method: 'GET',
+                data: {
+                    page: currentViolationPage,
+                    per_page: VIOLATIONS_PER_PAGE
+                },
+                success: function(response) {
+                    const violations = response.violations || [];
+                    renderViolations(violations, 'append');  // 加载更多：追加到底部
+                    isLoadingViolations = false;
+                },
+                error: function() {
+                    isLoadingViolations = false;
+                    hasMoreViolations = false;
+                }
+            });
+        }
+
+        // 导入学生名单
+        function importStudents() {
+            if (!currentExamId) {
+                alert('请先选择一个考试');
+                return;
+            }
+
+            // 检查当前激活的选项卡
+            const activeTab = document.querySelector('#importTabs .nav-link.active').id;
+            const formData = new FormData();
+
+            if (activeTab === 'text-tab') {
+                // 文本输入方式
+                const textInput = document.querySelector('#importStudentsForm [name="student_list_text"]');
+                const studentListText = textInput.value.trim();
+
+                if (!studentListText) {
+                    alert('请输入学生名单');
+                    return;
+                }
+
+                formData.append('student_list_text', studentListText);
+                formData.append('import_type', 'text');
+            } else {
+                // 文件上传方式
+                const fileInput = document.querySelector('#importStudentsForm [name="student_list_file"]');
+
+                if (!fileInput.files.length) {
+                    alert('请选择文件');
+                    return;
+                }
+
+                formData.append('student_list_file', fileInput.files[0]);
+                formData.append('import_type', 'file');
+            }
+
+            formData.append('exam_id', currentExamId);
+
+            $.ajax({
+                url: '/api/students/import',
+                method: 'POST',
+                data: formData,
+                processData: false,
+                contentType: false,
+                success: function(response) {
+                    $('#importStudentsModal').modal('hide');
+                    $('#importStudentsForm')[0].reset();
+                    alert(response.message);
+                    fetchExamDetails(currentExamId);
+                },
+                error: function(xhr) {
+                    alert('导入失败: ' + (xhr.responseJSON?.message || '未知错误'));
+                }
+            });
+        }
+
+        // 复制考试（基于已有考试创建新考试）
+        function copyExam(event, examId) {
+            // 阻止事件冒泡，避免触发selectExam
+            event.stopPropagation();
+
+            // 获取考试详情和学生名单
+            $.ajax({
+                url: `/api/exams/${examId}`,
+                method: 'GET',
+                success: function(response) {
+                    if (response.status === 'success') {
+                        const exam = response.exam;
+
+                        // 获取学生列表
+                        $.ajax({
+                            url: `/api/exams/${examId}/students`,
+                            method: 'GET',
+                            success: function(students) {
+                                // 填充创建考试表单
+                                const form = $('#createExamForm');
+                                form.find('[name="name"]').val(exam.name + ' (复制)');
+                                form.find('[name="delay_min"]').val(exam.delay_min || 0);
+                                form.find('[name="default_url"]').val(exam.default_url || '');
+                                form.find('[name="disable_new_tabs"]').prop('checked', exam.disable_new_tabs === 1);
+
+                                // 生成学生名单文本
+                                const studentListText = students
+                                    .map(s => `${s.student_id} ${s.student_name}`)
+                                    .join('\n');
+                                form.find('[name="student_list_text"]').val(studentListText);
+
+                                // 清空时间字段（需要用户重新设置）
+                                form.find('[name="start_time"]').val('');
+                                form.find('[name="end_time"]').val('');
+
+                                // 显示模态框
+                                $('#createExamModal').modal('show');
+                            },
+                            error: function(xhr) {
+                                alert('获取学生列表失败: ' + (xhr.responseJSON?.message || '未知错误'));
+                            }
+                        });
+                    }
+                },
+                error: function(xhr) {
+                    alert('获取考试信息失败: ' + (xhr.responseJSON?.message || '未知错误'));
+                }
+            });
+        }
+
+        // 确认删除考试
+        function confirmDeleteExam(event, examId, examName) {
+            // 阻止事件冒泡，避免触发selectExam
+            event.stopPropagation();
+
+            // 设置模态框内容
+            $('#delete-exam-name').text(examName);
+
+            // 设置确认按钮的点击事件
+            $('#confirm-delete-btn').off('click').on('click', function() {
+                deleteExam(examId);
+            });
+
+            // 显示模态框
+            $('#deleteExamModal').modal('show');
+        }
+
+        // 编辑考试
+        function editExam(event, examId) {
+            // 阻止事件冒泡，避免触发selectExam
+            event.stopPropagation();
+
+            // 获取考试详情
+            $.ajax({
+                url: `/api/exams/${examId}`,
+                method: 'GET',
+                success: function(response) {
+                    if (response.status === 'success') {
+                        const exam = response.exam;
+                        
+                        // 填充表单数据
+                        $('#edit-exam-id').val(exam.id);
+                        $('#edit-exam-name').val(exam.name);
+                        
+                        // 处理时间格式
+                        if (exam.start_time) {
+                            const startTime = formatDateTimeForInput(exam.start_time);
+                            $('#edit-exam-start-time').val(startTime);
+                        }
+                        if (exam.end_time) {
+                            const endTime = formatDateTimeForInput(exam.end_time);
+                            $('#edit-exam-end-time').val(endTime);
+                        }
+                        
+                        $('#edit-exam-delay-min').val(exam.delay_min || 0);
+                        $('#edit-exam-default-url').val(exam.default_url || '');
+                        $('#edit-exam-disable-new-tabs').prop('checked', exam.disable_new_tabs === 1);
+                        $('#edit-exam-monitor-password').val(exam.monitor_password || '');
+
+                        // 显示模态框
+                        $('#editExamModal').modal('show');
+                    }
+                },
+                error: function(xhr) {
+                    alert('获取考试信息失败: ' + (xhr.responseJSON?.message || '未知错误'));
+                }
+            });
+        }
+
+        // 格式化日期时间为input[type="datetime-local"]所需的格式
+        function formatDateTimeForInput(dateTimeStr) {
+            if (!dateTimeStr) return '';
+
+            try {
+                // 优先处理标准格式: "2024-01-15 14:30:00" (本地时间，无时区信息)
+                let match = dateTimeStr.match(/^(\d{4})-(\d{2})-(\d{2})[T\s](\d{2}):(\d{2})/);
+                if (match) {
+                    const [_, year, month, day, hours, minutes] = match;
+                    return `${year}-${month}-${day}T${hours}:${minutes}`;
+                }
+
+                // 处理GMT格式: "Thu, 25 Dec 2025 18:00:00 GMT"
+                // 注意：虽然看起来是GMT格式，但数据库存储的是本地时间，这个GMT只是序列化的格式
+                // 服务器和客户端在同一时区，不需要时区转换，直接提取时间即可
+                if (dateTimeStr.includes('GMT') || dateTimeStr.includes('UTC')) {
+                    // 正则提取: "Thu, 25 Dec 2025 18:00:00 GMT"
+                    // 格式: Day, DD Mon YYYY HH:MM:SS GMT
+                    let gmtMatch = dateTimeStr.match(/(\d{1,2})\s+(\w{3})\s+(\d{4})\s+(\d{2}):(\d{2}):(\d{2})/);
+                    if (gmtMatch) {
+                        const day = gmtMatch[1].padStart(2, '0');
+                        const monthName = gmtMatch[2];
+                        const year = gmtMatch[3];
+                        const hours = gmtMatch[4];
+                        const minutes = gmtMatch[5];
+
+                        // 月份映射
+                        const monthMap = {
+                            'Jan': '01', 'Feb': '02', 'Mar': '03', 'Apr': '04',
+                            'May': '05', 'Jun': '06', 'Jul': '07', 'Aug': '08',
+                            'Sep': '09', 'Oct': '10', 'Nov': '11', 'Dec': '12'
+                        };
+                        const month = monthMap[monthName];
+
+                        if (month) {
+                            const result = `${year}-${month}-${day}T${hours}:${minutes}`;
+                            console.log('GMT格式直接提取（无时区转换）:', dateTimeStr, '->', result);
+                            return result;
+                        }
+                    }
+                }
+
+                // 其他格式兜底
+                console.warn('使用兜底方案解析时间:', dateTimeStr);
+                let date = new Date(dateTimeStr);
+                if (isNaN(date.getTime())) {
+                    return '';
+                }
+
+                const year = date.getFullYear();
+                const month = String(date.getMonth() + 1).padStart(2, '0');
+                const day = String(date.getDate()).padStart(2, '0');
+                const hours = String(date.getHours()).padStart(2, '0');
+                const minutes = String(date.getMinutes()).padStart(2, '0');
+
+                return `${year}-${month}-${day}T${hours}:${minutes}`;
+            } catch (error) {
+                console.error('时间格式化错误:', error, dateTimeStr);
+                return '';
+            }
+        }
+
+        // 更新考试信息
+        function updateExam() {
+            const form = $('#editExamForm');
+            const formData = new FormData();
+
+            // 获取表单数据
+            const examId = form.find('#edit-exam-id').val();
+            const name = form.find('#edit-exam-name').val();
+            const start_time = form.find('#edit-exam-start-time').val();
+            const end_time = form.find('#edit-exam-end-time').val();
+            const default_url = form.find('#edit-exam-default-url').val();
+            const delay_min = form.find('#edit-exam-delay-min').val();
+            const disable_new_tabs = form.find('#edit-exam-disable-new-tabs').is(':checked');
+            const monitor_password = form.find('#edit-exam-monitor-password').val();
+
+            // 验证必填字段
+            if (!name || !start_time || !end_time) {
+                alert('请填写所有必填字段');
+                return;
+            }
+
+            // 添加到 FormData
+            formData.append('name', name);
+            formData.append('start_time', start_time);
+            formData.append('end_time', end_time);
+            if (default_url) formData.append('default_url', default_url);
+            if (delay_min) formData.append('delay_min', delay_min);
+            formData.append('disable_new_tabs', disable_new_tabs);
+            if (monitor_password) formData.append('monitor_password', monitor_password);
+
+            $.ajax({
+                url: `/api/exams/${examId}`,
+                method: 'PUT',
+                data: formData,
+                processData: false,
+                contentType: false,
+                success: function(response) {
+                    $('#editExamModal').modal('hide');
+                    fetchData();
+                    alert(response.message);
+                },
+                error: function(xhr) {
+                    alert('更新考试失败: ' + (xhr.responseJSON?.message || '未知错误'));
+                }
+            });
+        }
+
+        // 删除考试
+        function deleteExam(examId) {
+            $.ajax({
+                url: `/api/exams/${examId}`,
+                method: 'DELETE',
+                success: function(response) {
+                    // 关闭模态框
+                    $('#deleteExamModal').modal('hide');
+
+                    // 如果当前选中的考试被删除，清除选中状态
+                    if (currentExamId === examId) {
+                        currentExamId = null;
+                        $('#exam-details').hide();
+                    }
+
+                    // 刷新考试列表
+                    fetchData();
+
+                    // 显示成功消息
+                    alert(response.message);
+                },
+                error: function(xhr) {
+                    // 关闭模态框
+                    $('#deleteExamModal').modal('hide');
+
+                    // 显示错误消息
+                    alert('删除考试失败: ' + (xhr.responseJSON?.message || '未知错误'));
+                }
+            });
+        }
+
+        // 确认删除学生
+        function confirmDeleteStudent(event, examId, studentId, studentName) {
+            // 阻止事件冒泡
+            event.stopPropagation();
+
+            // 设置模态框内容
+            $('#delete-student-name').text(studentName + ' (' + studentId + ')');
+
+            // 设置确认按钮的点击事件
+            $('#confirm-delete-student-btn').off('click').on('click', function() {
+                deleteStudent(examId, studentId);
+            });
+
+            // 显示模态框
+            $('#deleteStudentModal').modal('show');
+        }
+
+        // 删除学生
+        function deleteStudent(examId, studentId) {
+            $.ajax({
+                url: `/api/exams/${examId}/students/${studentId}`,
+                method: 'DELETE',
+                success: function(response) {
+                    // 关闭模态框
+                    $('#deleteStudentModal').modal('hide');
+
+                    // 刷新考试详情
+                    fetchExamDetails(examId);
+
+                    // 显示成功消息
+                    alert(response.message);
+                },
+                error: function(xhr) {
+                    // 关闭模态框
+                    $('#deleteStudentModal').modal('hide');
+
+                    // 显示错误消息
+                    alert('删除学生失败: ' + (xhr.responseJSON?.message || '未知错误'));
+                }
+            });
+        }
+
+        // 查看学生登录历史
+        function loadStudentLoginHistory(examId, studentId) {
+            console.log(`Loading login history for exam ${examId}, student ${studentId}`);
+            $.ajax({
+                url: `/api/exams/${examId}/students/${studentId}/logins`,
+                method: 'GET',
+                success: function(records) {
+                    console.log(`Received ${records.length} login records:`, records);
+                    // 更新数量
+                    $(`#login-history-count-${examId}-${studentId}`).text(`(${records.length})`);
+                    let html = '';
+                    if (records.length === 0) {
+                        html = '<div class="text-muted">暂无登录/退出记录</div>';
+                    } else {
+                        html += '<ul class="list-group list-group-flush">';
+                        for (let i = 0; i < records.length; i++) {
+                            const r = records[i];
+                            let bgStyle = '';
+                            // 检查上一次为logout，这次为login，且间隔大于1分钟
+                            if (i > 0 && r.type === 'login' && records[i-1].type === 'logout') {
+                                const prev = records[i-1];
+                                const t1 = new Date(prev.timestamp).getTime();
+                                const t2 = new Date(r.timestamp).getTime();
+                                if (t2 - t1 > 60 * 1000) {
+                                    bgStyle = 'background-color:#ffcccc;';
+                                }
+                            }
+                            // 根据不同的状态类型设置不同的样式和文本
+                            let badgeClass = 'secondary';
+                            let statusText = '未知';
+                            switch(r.type) {
+                                case 'login':
+                                    badgeClass = 'success';
+                                    statusText = '登录';
+                                    break;
+                                case 'logout':
+                                    badgeClass = 'danger';
+                                    statusText = '退出';
+                                    break;
+                                case 'online':
+                                    badgeClass = 'info';
+                                    statusText = '上线';
+                                    break;
+                                case 'offline':
+                                    badgeClass = 'warning';
+                                    statusText = '断线';
+                                    break;
+                                default:
+                                    badgeClass = 'secondary';
+                                    statusText = r.type;
+                            }
+                            html += `<li class="list-group-item py-1 px-2" style="${bgStyle}">
+                                <span class="badge bg-${badgeClass}">${statusText}</span>
+                                时间: ${r.timestamp} IP: ${r.ip}
+                            </li>`;
+                        }
+                        html += '</ul>';
+                    }
+                    $(`#login-history-list-${examId}-${studentId} .card-body`).html(html);
+                },
+                error: function(xhr, status, error) {
+                    console.error(`Failed to load login history: ${status} - ${error}`, xhr.responseText);
+                    $(`#login-history-list-${examId}-${studentId} .card-body`).html('<div class="text-danger">获取登录历史失败</div>');
+                }
+            });
+        }
+
+        function toggleLoginHistory(examId, studentId) {
+            // 如需每次展开都刷新历史，可取消注释：
+            // loadStudentLoginHistory(examId, studentId);
+        }
+
+        // 口令验证弹窗（统一入口：管理员或监考）
+        function showPasswordModal() {
+            const modalHtml = `
+            <div class="modal fade" id="passwordModal" tabindex="-1" aria-modal="true" role="dialog" style="z-index: 2000;">
+                <div class="modal-dialog modal-dialog-centered">
+                    <div class="modal-content">
+                        <form id="password-form" autocomplete="off">
+                            <div class="modal-header">
+                                <h5 class="modal-title">🔐 系统登录</h5>
+                            </div>
+                            <div class="modal-body">
+                                <p class="text-muted small mb-3">请输入管理口令或考试监控密码</p>
+                                <input type="password" id="page-password" class="form-control" placeholder="管理口令 / 监控密码" autocomplete="off">
+                                <div id="password-error" class="text-danger mt-2" style="display:none;">口令错误，请重试</div>
+                                <div id="password-checking" class="text-primary mt-2" style="display:none;">
+                                    <span class="spinner-border spinner-border-sm me-2"></span>验证中...
+                                </div>
+                            </div>
+                            <div class="modal-footer">
+                                <button type="submit" class="btn btn-primary" id="password-confirm-btn">登录</button>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+            </div>`;
+            $(document.body).append(modalHtml);
+            const modal = new bootstrap.Modal(document.getElementById('passwordModal'), {backdrop: 'static', keyboard: false});
+            modal.show();
+            setTimeout(()=>{$('#page-password').focus();}, 300);
+
+            $('#password-form').on('submit', function(e) {
+                e.preventDefault();
+                const val = $('#page-password').val();
+
+                // 隐藏错误提示
+                $('#password-error').hide();
+
+                // 1. 先检查是否是管理口令
+                if(val === 'gdufskaoshi') {
+                    modal.hide();
+                    setTimeout(()=>{$('#passwordModal').remove();}, 500);
+                    return;
+                }
+
+                // 2. 尝试作为监控密码验证
+                $('#password-checking').show();
+                $('#password-confirm-btn').prop('disabled', true);
+
+                $.ajax({
+                    url: '/api/monitor/login',
+                    method: 'POST',
+                    contentType: 'application/json',
+                    data: JSON.stringify({ monitor_password: val }),
+                    success: function(response) {
+                        if (response.status === 'success') {
+                            // 监控密码验证成功，跳转到监控页面
+                            window.location.href = `/monitor/${response.exam_id}`;
+                        }
+                    },
+                    error: function() {
+                        // 监控密码也不对，显示错误
+                        $('#password-checking').hide();
+                        $('#password-error').text('口令或密码错误，请重试').show();
+                        $('#page-password').val('').focus();
+                        $('#password-confirm-btn').prop('disabled', false);
+                    }
+                });
+            });
+        }
+
+        function startAutoRefresh() {
+            if (autoRefreshTimer) clearInterval(autoRefreshTimer);
+            autoRefreshTimer = setInterval(function() { fetchData(false); }, 15000);
+        }
+        function stopAutoRefresh() {
+            if (autoRefreshTimer) clearInterval(autoRefreshTimer);
+            autoRefreshTimer = null;
+        }
+
+        // 页面加载完成后执行
+        $(document).ready(function() {
+            showPasswordModal();
+            updateCurrentTime();
+            setInterval(updateCurrentTime, 1000);  // 每秒更新当前时间
+            fetchData(true);
+            startAutoRefresh();
+            $('#stop-auto-refresh').on('change', function() {
+                if (this.checked) {
+                    stopAutoRefresh();
+                } else {
+                    startAutoRefresh();
+                }
+            });
+            // 修改刷新按钮为增量刷新（与自动刷新一致）
+            $('.refresh-btn').off('click').on('click', function() { fetchData(false); });
+        });
+    </script>
+</body>
+</html>

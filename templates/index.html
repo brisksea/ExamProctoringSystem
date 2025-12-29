@@ -1066,7 +1066,7 @@
 
                 masonryContainer.append(`
                     <div class="masonry-item">
-                        <video controls width="100%" src="${r.download_url}" onerror="console.error('Failed to load video: ${r.download_url}')">
+                        <video controls width="100%" preload="none" class="lazy-video" data-src="${r.download_url}" onerror="console.error('Failed to load video: ${r.download_url}')">
                             您的浏览器不支持视频播放
                         </video>
                         <div class="timestamp">
@@ -1077,6 +1077,7 @@
                 `);
             });
 
+            setupVideoLazyLoading();
             $('.loading-spinner').hide();
         }
 
@@ -1086,11 +1087,42 @@
             merged.forEach(r => {
                 masonryContainer.append(`
                     <div class="masonry-item">
-                        <video controls width="100%" src="${r.download_url}"></video>
+                        <video controls width="100%" preload="none" class="lazy-video" data-src="${r.download_url}"></video>
                         <div class="timestamp">${r.filename}</div>
                         <a href="${r.download_url}" target="_blank" class="btn btn-sm btn-outline-success mt-1">下载合并录屏</a>
                     </div>
                 `);
+            });
+            setupVideoLazyLoading();
+        }
+
+        // 懒加载可见区域内的视频
+        let __videoObserver;
+        function setupVideoLazyLoading() {
+            const videos = document.querySelectorAll('#studentScreenshotModal .masonry-container video.lazy-video[data-src]');
+            if (!('IntersectionObserver' in window)) {
+                // 兼容性降级：直接加载首屏
+                videos.forEach(v => {
+                    if (!v.src && v.dataset.src) v.src = v.dataset.src;
+                });
+                return;
+            }
+            if (!__videoObserver) {
+                __videoObserver = new IntersectionObserver((entries) => {
+                    entries.forEach(entry => {
+                        if (entry.isIntersecting) {
+                            const v = entry.target;
+                            if (!v.src && v.dataset.src) {
+                                v.src = v.dataset.src;
+                                v.removeAttribute('data-src');
+                            }
+                            __videoObserver.unobserve(v);
+                        }
+                    });
+                }, { root: document.querySelector('#studentScreenshotModal .modal-body'), rootMargin: '200px 0px', threshold: 0.01 });
+            }
+            videos.forEach(v => {
+                if (v.dataset && v.dataset.src) __videoObserver.observe(v);
             });
         }
 

@@ -122,7 +122,7 @@ def find_local_chromedriver():
     if os.path.exists(wdm_chrome_dir):
         for version_dir in os.listdir(wdm_chrome_dir):
             # 如果chrome_major存在且版本目录前三个数字匹配
-            if chrome_major and version_dir.split('.')[0] == chrome_major:
+            if chrome_major and version_dir and '.' in version_dir and version_dir.split('.')[0] == chrome_major:
                 driver_path = os.path.join(wdm_chrome_dir, version_dir, chromedriver_name)
                 chromedriver_paths.append(driver_path)
 
@@ -143,6 +143,8 @@ def find_local_chromedriver():
 
 def download_chromedriver_from_server(chrome_version, server_url):
     """根据主版本号从服务器下载chromedriver，重命名为chromedriver.exe"""
+    if not chrome_version:
+        raise ValueError("chrome_version不能为None")
     major_version = chrome_version.split('.')[0]
     download_url = f"{server_url}/chromedriver_{major_version}.exe"
     local_path = os.path.join(os.path.dirname(__file__), "chromedriver.exe")

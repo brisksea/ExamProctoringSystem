@@ -4,6 +4,10 @@
 """
 考试监控服务器
 用于接收和显示学生状态和异常信息
+
+数据持久化策略:
+- 学生实时状态（online/offline/logout 等）保存在 Redis，用于快速查询与心跳更新。
+- 学生的登录、掉线(offline)、上线(online)、退出(logout) 等活动事件写入数据库，形成可审计的历史记录。
 """
 
 import os
@@ -16,6 +20,7 @@ from datetime import datetime, timedelta
 from flask import Flask, request, render_template, jsonify, send_from_directory, send_file, current_app
 from data_access import DataAccess
 from merge_manager import MergeManager
+from redis_helper import get_redis
 
 # 数据存储目录
 DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "server_data")
@@ -29,6 +34,11 @@ if not os.path.exists(DATA_DIR):
 # 创建Flask应用
 def create_app():
     app = Flask(__name__)
+    
+    # 设置文件上传配置
+    app.config['MAX_CONTENT_LENGTH'] = 500 * 1024 * 1024  # 500MB 最大文件大小
+    app.config['UPLOAD_FOLDER'] = DATA_DIR
+    
     app.data_access = DataAccess()
     app.merge_manager = MergeManager()
     return app
@@ -232,6 +242,31 @@ def login():
             if not os.path.exists(student_recording_dir):
                 os.makedirs(student_recording_dir)
 
+            # Redis 标记在线与最近活跃
+            try:
+                r = get_redis()
+                student_key = f"exam:{exam_id}:student:{student_id}"
+                now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                r.hset(student_key, mapping={
+                    "username": student_name,
+                    "status": "online",
+                    "login_time": now,
+                    "last_seen": now,
+                    "ip": ip,
+                })
+                r.sadd(f"exam:{exam_id}:online_students", student_id)
+                r.expire(student_key, 180)
+            except Exception as e:
+                print(f"登录写入Redis失败: {e}")
+
+            # 记录登录事件到数据库
+            try:
+                student_exam = current_app.data_access.get_student_exam(student_id, exam_id)
+                if student_exam:
+                    current_app.data_access.add_login_history(student_exam['id'], 'login', now, ip)
+            except Exception as e:
+                print(f"记录登录历史失败: {e}")
+
             # 返回完整的考试和学生信息
             return jsonify({
                 "status": "success",
@@ -317,6 +352,15 @@ def student_logout():
             current_app.data_access.add_login_history(student_exam['id'], 'logout', timestamp, ip)
 
             print(f"学生登出: ID={student_id}, 考试={exam_id}, 时间={timestamp}")
+
+            # Redis 下线标记
+            try:
+                r = get_redis()
+                student_key = f"exam:{exam_id}:student:{student_id}"
+                r.hset(student_key, mapping={"status": "logout", "logout_time": timestamp})
+                r.srem(f"exam:{exam_id}:online_students", student_id)
+            except Exception as e:
+                print(f"Redis登出标记失败: {e}")
 
         # 登出时将合并任务加入队列
         current_app.merge_manager.add_merge_task(
@@ -459,15 +503,29 @@ def serve_violation_screenshot(exam_id, filename):
 def get_config():
     """获取服务器配置信息"""
     try:
-        # 检查配置文件是否存在
+        # 先尝试 Redis 缓存
+        try:
+            r = get_redis()
+            cache = r.get("server_config")
+            if cache:
+                return jsonify({"status": "success", "config": json.loads(cache)})
+        except Exception as e:
+            print(f"读取配置Redis缓存失败: {e}")
+
+        # 文件兜底
         if not os.path.exists(CONFIG_FILE):
             return jsonify({"status": "error", "message": "Configuration file not found"}), 404
 
-        # 读取配置文件
         with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
             config = json.load(f)
 
-        # 返回配置信息
+        # 写入 Redis 短缓存
+        try:
+            r = get_redis()
+            r.setex("server_config", 60, json.dumps(config))
+        except Exception as e:
+            print(f"写入配置Redis缓存失败: {e}")
+
         return jsonify({"status": "success", "config": config})
     except Exception as e:
         print(f"获取配置信息时出错: {str(e)}")
@@ -793,20 +851,41 @@ def get_server_time():
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     return jsonify({"server_time": now})
 
-# 修改上传录屏API
+# 修改上传录屏API - 支持流式上传
 @app.route('/api/screen_recording', methods=['POST'])
 def upload_screen_recording():
-    """接收客户端上传的屏幕录制视频"""
+    """接收客户端上传的屏幕录制视频 - 流式处理"""
     try:
-        video_file = request.files.get('video')
+        # 检查文件大小 - 使用更保守的限制
+        content_length = request.content_length
+        if content_length and content_length > 200 * 1024 * 1024:  # 200MB
+            return jsonify({"status": "error", "message": "文件大小超过限制(200MB)"}), 413
+        
+        # 获取表单数据
         student_id = request.form.get('student_id')
         exam_id = request.form.get('exam_id')
         timestamp = request.form.get('timestamp')
         fps = request.form.get('fps', 10)
         quality = request.form.get('quality', 80)
         
-        if not video_file or not student_id or not exam_id:
-            return jsonify({"status": "error", "message": "Missing video file or student information"}), 400
+        if not student_id or not exam_id:
+            return jsonify({"status": "error", "message": "Missing student information"}), 400
+        
+        # 检查是否有文件上传
+        if 'video' not in request.files:
+            return jsonify({"status": "error", "message": "No video file provided"}), 400
+        
+        video_file = request.files['video']
+        if not video_file or video_file.filename == '':
+            return jsonify({"status": "error", "message": "No video file selected"}), 400
+        
+        # 检查文件名安全性
+        if video_file.filename:
+            # 只允许安全的文件扩展名
+            allowed_extensions = {'.mp4', '.webm', '.avi', '.mov', '.mkv'}
+            file_ext = os.path.splitext(video_file.filename)[1].lower()
+            if file_ext not in allowed_extensions:
+                return jsonify({"status": "error", "message": "不支持的文件格式"}), 400
         
         # 生成文件名
         if timestamp:
@@ -834,21 +913,44 @@ def upload_screen_recording():
 
         video_path = os.path.join(student_recording_dir, filename)
 
-        # 保存视频文件
-        video_file.save(video_path)
+        # 流式保存文件 - 避免内存问题
+        try:
+            # 使用流式写入，避免一次性加载到内存
+            with open(video_path, 'wb') as f:
+                chunk_size = 8192  # 8KB chunks
+                while True:
+                    chunk = video_file.stream.read(chunk_size)
+                    if not chunk:
+                        break
+                    f.write(chunk)
+                    
+        except Exception as save_error:
+            print(f"保存视频文件失败: {save_error}")
+            # 清理可能部分写入的文件
+            if os.path.exists(video_path):
+                try:
+                    os.remove(video_path)
+                except:
+                    pass
+            return jsonify({"status": "error", "message": "保存文件失败"}), 500
         
-        print(f"录屏上传成功: {filename} ({os.path.getsize(video_path)} bytes)")
+        # 验证文件是否保存成功
+        if not os.path.exists(video_path) or os.path.getsize(video_path) == 0:
+            return jsonify({"status": "error", "message": "文件保存失败"}), 500
+        
+        file_size = os.path.getsize(video_path)
+        print(f"录屏上传成功: {filename} ({file_size} bytes)")
         
         return jsonify({
             "status": "success", 
             "message": "录屏已上传", 
             "filename": filename,
-            "file_size": os.path.getsize(video_path)
+            "file_size": file_size
         })
         
     except Exception as e:
-        print(f"录屏上传失败: {str(e)}")
-        return jsonify({"status": "error", "message": f"上传失败：{str(e)}"}), 500
+        print(f"上传录屏时发生错误: {e}")
+        return jsonify({"status": "error", "message": f"服务器内部错误: {str(e)}"}), 500
 
 @app.route('/recordings/<int:exam_id>/<filename>')
 def serve_recording(exam_id, filename):
@@ -1012,99 +1114,8 @@ def get_student_recording_count(exam_id, student_id):
         print(f"获取录屏数量失败: {e}")
         return 0
 
-def check_status():
-    """检查所有正在进行的考试状态和学生状态"""
-    # client = get_redis() # Removed as per edit hint
-    now = datetime.now()
-    
-    # 获取所有考试
-    exams = current_app.data_access.get_all_exams() # Changed to current_app.data_access
-    
-    for exam in exams:
-        exam_id = exam['id']
-        exam_key = f'exam:{exam_id}'
-        
-        # 检查考试状态
-        try:
-            # 解析时间，支持datetime对象和字符串格式
-            start_time = exam['start_time']
-            if isinstance(start_time, str):
-                try:
-                    start_time = datetime.strptime(start_time, "%Y-%m-%d %H:%M:%S")
-                except ValueError:
-                    start_time = datetime.strptime(start_time, "%Y-%m-%dT%H:%M")
-            elif not isinstance(start_time, datetime):
-                raise ValueError(f"Unsupported start_time type: {type(start_time)}")
-
-            end_time = exam['end_time']
-            if isinstance(end_time, str):
-                try:
-                    end_time = datetime.strptime(end_time, "%Y-%m-%d %H:%M:%S")
-                except ValueError:
-                    end_time = datetime.strptime(end_time, "%Y-%m-%dT%H:%M")
-            elif not isinstance(end_time, datetime):
-                raise ValueError(f"Unsupported end_time type: {type(end_time)}")
-            
-            # 更新考试状态
-            if now < start_time:
-                new_status = 'pending'
-            elif start_time <= now <= end_time:
-                new_status = 'active'
-            else:
-                new_status = 'completed'
-                
-            # 如果状态发生变化，更新考试状态
-            if exam['status'] != new_status:
-                current_app.data_access.update_exam_status(exam_id, new_status) # Changed to current_app.data_access
-                print(f"考试状态更新: {exam['name']} (ID: {exam_id}) {exam['status']} -> {new_status}")
-            
-            # 只检查正在进行的考试的学生状态
-            if new_status == 'active':
-                students = current_app.data_access.get_exam_students(exam_id) # Changed to current_app.data_access
-
-                for student in students:  # students is now a list
-                    student_id = student['student_id']
-                    # 跳过已经掉线或已结束考试的学生
-                    if student['status'] in ['offline', 'logout']:
-                        continue
-
-                    # 获取最后活跃时间
-                    last_active = student.get('last_active')
-                    if last_active:
-                        try:
-                            last_active_time = datetime.strptime(str(last_active), "%Y-%m-%d %H:%M:%S")
-                            # 如果超过30秒没有活跃，标记为掉线
-                            if (now - last_active_time).total_seconds() > 30:
-                                current_app.data_access.update_student_status(student_id, exam_id, 'offline') # Changed to current_app.data_access
-                                print(f"学生掉线: {student['student_name']} (ID: {student_id}, 考试: {exam_id})")
-                        except ValueError as e:
-                            print(f"解析学生最后活跃时间出错: {last_active}, 错误: {str(e)}")
-                            
-        except Exception as e:
-            print(f"处理考试 {exam_id} ({exam['name']}) 时出错: {str(e)}")
-            continue
-
-def start_status_checker():
-    """启动状态检查定时任务"""
-    def checker():
-        while True:
-            try:
-                check_status()
-            except Exception as e:
-                print(f"状态检查出错: {str(e)}")
-            time.sleep(10)  # 每10秒检查一次
-    
-    # 启动后台线程
-    thread = threading.Thread(target=checker, daemon=True)
-    thread.start()
-
-
-
 if __name__ == '__main__':
     try:
-        # 启动状态检查器
-        #start_status_checker()
-
         # 启动服务器
         print(f"进程 {os.getpid()}: 考试监控服务器启动在 http://0.0.0.0:5000/")
         print(f"已注册的路由数量: {len(app.url_map._rules)}")
