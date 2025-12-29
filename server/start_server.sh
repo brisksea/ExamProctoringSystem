@@ -56,13 +56,16 @@ stop_gunicorn() {
     fi
 
     # 清理所有可能残留的 gunicorn 进程
+    # 使用 exam_monitor 进程名来匹配，因为 worker 进程的 cmdline 会被改写
+    pkill -9 -f "gunicorn.*exam_monitor" 2>/dev/null
+    # 也尝试匹配原始启动命令
     pkill -9 -f "gunicorn.*server:app" 2>/dev/null
     sleep 1
 
     # 再次确认清理完毕
-    if pgrep -f "gunicorn.*server:app" > /dev/null 2>&1; then
+    if pgrep -f "gunicorn.*exam_monitor" > /dev/null 2>&1; then
         echo "⚠ 警告: 仍有 gunicorn 进程残留"
-        pgrep -af "gunicorn.*server:app"
+        pgrep -af "gunicorn.*exam_monitor"
     fi
 
     echo "✓ Gunicorn 已停止"
