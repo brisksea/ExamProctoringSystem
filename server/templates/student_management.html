@@ -1,0 +1,351 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>学生管理 - 考试监控系统</title>
+    <link href="/static/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+        .student-card {
+            transition: all 0.3s ease;
+        }
+        .student-card:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+        }
+        .search-box {
+            background: #f8f9fa;
+            border-radius: 10px;
+            padding: 20px;
+            margin-bottom: 20px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container-fluid">
+        <div class="row">
+            <!-- 侧边栏 -->
+            <div class="col-md-2 bg-dark text-white p-3">
+                <h5>考试监控系统</h5>
+                <ul class="nav flex-column">
+                    <li class="nav-item">
+                        <a class="nav-link text-white" href="/">考试监控</a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link text-white active" href="/student_management">学生管理</a>
+                    </li>
+                </ul>
+            </div>
+
+            <!-- 主内容区 -->
+            <div class="col-md-10 p-4">
+                <div class="d-flex justify-content-between align-items-center mb-4">
+                    <h2>学生管理</h2>
+                    <div>
+                        <button class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#addStudentModal">
+                            添加学生
+                        </button>
+                        <button class="btn btn-success" data-bs-toggle="modal" data-bs-target="#batchImportModal">
+                            批量导入
+                        </button>
+                    </div>
+                </div>
+
+                <!-- 搜索和筛选 -->
+                <div class="search-box">
+                    <div class="row">
+                        <div class="col-md-6">
+                            <input type="text" class="form-control" id="searchInput" placeholder="搜索学生姓名或ID...">
+                        </div>
+                        <div class="col-md-3">
+                            <button class="btn btn-outline-primary" onclick="searchStudents()">搜索</button>
+                            <button class="btn btn-outline-secondary" onclick="loadStudents()">刷新</button>
+                        </div>
+                        <div class="col-md-3 text-end">
+                            <span id="studentCount" class="text-muted">总计: 0 个学生</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 学生列表 -->
+                <div class="row" id="studentsList">
+                    <!-- 学生卡片将在这里动态加载 -->
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 添加学生模态框 -->
+    <div class="modal fade" id="addStudentModal" tabindex="-1">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">添加学生</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <form id="addStudentForm">
+                        <div class="mb-3">
+                            <label for="studentName" class="form-label">学生姓名 *</label>
+                            <input type="text" class="form-control" id="studentName" required>
+                        </div>
+                        <div class="mb-3">
+                            <label for="studentId" class="form-label">学生ID（可选）</label>
+                            <input type="text" class="form-control" id="studentId" placeholder="留空自动生成">
+                            <div class="form-text">如果不填写，系统将自动生成学生ID</div>
+                        </div>
+                    </form>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+                    <button type="button" class="btn btn-primary" onclick="addStudent()">添加</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 批量导入模态框 -->
+    <div class="modal fade" id="batchImportModal" tabindex="-1">
+        <div class="modal-dialog modal-lg">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">批量导入学生</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <div class="mb-3">
+                        <label for="batchData" class="form-label">学生数据（JSON格式）</label>
+                        <textarea class="form-control" id="batchData" rows="10" placeholder='[
+  {"student_name": "张三", "student_id": "2023001"},
+  {"student_name": "李四", "student_id": "2023002"},
+  {"student_name": "王五"}
+]'></textarea>
+                        <div class="form-text">
+                            请输入JSON格式的学生数据。student_id可选，不填写将自动生成。
+                        </div>
+                    </div>
+                    <div class="mb-3">
+                        <button type="button" class="btn btn-outline-info" onclick="validateBatchData()">验证数据</button>
+                    </div>
+                    <div id="validationResult"></div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+                    <button type="button" class="btn btn-success" onclick="batchImportStudents()">导入</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="/static/js/bootstrap.bundle.min.js"></script>
+    <script>
+        let allStudents = [];
+
+        // 页面加载时获取学生列表
+        document.addEventListener('DOMContentLoaded', function() {
+            loadStudents();
+        });
+
+        // 加载学生列表
+        function loadStudents() {
+            fetch('/api/students')
+                .then(response => response.json())
+                .then(data => {
+                    if (data.status === 'success') {
+                        allStudents = data.students;
+                        displayStudents(allStudents);
+                        updateStudentCount(allStudents.length);
+                    } else {
+                        showAlert('获取学生列表失败: ' + data.message, 'danger');
+                    }
+                })
+                .catch(error => {
+                    showAlert('网络错误: ' + error.message, 'danger');
+                });
+        }
+
+        // 显示学生列表
+        function displayStudents(students) {
+            const container = document.getElementById('studentsList');
+            container.innerHTML = '';
+
+            if (students.length === 0) {
+                container.innerHTML = '<div class="col-12 text-center text-muted">暂无学生数据</div>';
+                return;
+            }
+
+            students.forEach(student => {
+                const studentCard = `
+                    <div class="col-md-4 mb-3">
+                        <div class="card student-card">
+                            <div class="card-body">
+                                <h6 class="card-title">${student.student_name}</h6>
+                                <p class="card-text">
+                                    <small class="text-muted">ID: ${student.student_id}</small><br>
+                                    <small class="text-muted">创建时间: ${formatDateTime(student.created_at)}</small>
+                                </p>
+                            </div>
+                        </div>
+                    </div>
+                `;
+                container.innerHTML += studentCard;
+            });
+        }
+
+        // 搜索学生
+        function searchStudents() {
+            const searchTerm = document.getElementById('searchInput').value.toLowerCase();
+            if (!searchTerm) {
+                displayStudents(allStudents);
+                updateStudentCount(allStudents.length);
+                return;
+            }
+
+            const filteredStudents = allStudents.filter(student => 
+                student.student_name.toLowerCase().includes(searchTerm) ||
+                student.student_id.toLowerCase().includes(searchTerm)
+            );
+
+            displayStudents(filteredStudents);
+            updateStudentCount(filteredStudents.length);
+        }
+
+        // 添加学生
+        function addStudent() {
+            const studentName = document.getElementById('studentName').value.trim();
+            const studentId = document.getElementById('studentId').value.trim();
+
+            if (!studentName) {
+                showAlert('请输入学生姓名', 'warning');
+                return;
+            }
+
+            const data = { student_name: studentName };
+            if (studentId) {
+                data.student_id = studentId;
+            }
+
+            fetch('/api/students', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(data)
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.status === 'success') {
+                    showAlert('学生添加成功', 'success');
+                    document.getElementById('addStudentForm').reset();
+                    bootstrap.Modal.getInstance(document.getElementById('addStudentModal')).hide();
+                    loadStudents();
+                } else {
+                    showAlert('添加失败: ' + data.message, 'danger');
+                }
+            })
+            .catch(error => {
+                showAlert('网络错误: ' + error.message, 'danger');
+            });
+        }
+
+        // 验证批量数据
+        function validateBatchData() {
+            const data = document.getElementById('batchData').value.trim();
+            const resultDiv = document.getElementById('validationResult');
+
+            try {
+                const students = JSON.parse(data);
+                if (!Array.isArray(students)) {
+                    throw new Error('数据必须是数组格式');
+                }
+
+                let validCount = 0;
+                let errors = [];
+
+                students.forEach((student, index) => {
+                    if (!student.student_name) {
+                        errors.push(`第${index + 1}行: 缺少student_name字段`);
+                    } else {
+                        validCount++;
+                    }
+                });
+
+                if (errors.length === 0) {
+                    resultDiv.innerHTML = `<div class="alert alert-success">验证通过！共${validCount}个有效学生记录</div>`;
+                } else {
+                    resultDiv.innerHTML = `<div class="alert alert-warning">发现${errors.length}个错误：<br>${errors.join('<br>')}</div>`;
+                }
+            } catch (error) {
+                resultDiv.innerHTML = `<div class="alert alert-danger">JSON格式错误: ${error.message}</div>`;
+            }
+        }
+
+        // 批量导入学生
+        function batchImportStudents() {
+            const data = document.getElementById('batchData').value.trim();
+
+            try {
+                const students = JSON.parse(data);
+                
+                fetch('/api/students/batch', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ students: students })
+                })
+                .then(response => response.json())
+                .then(data => {
+                    if (data.status === 'success') {
+                        showAlert(data.message, 'success');
+                        document.getElementById('batchData').value = '';
+                        document.getElementById('validationResult').innerHTML = '';
+                        bootstrap.Modal.getInstance(document.getElementById('batchImportModal')).hide();
+                        loadStudents();
+                    } else {
+                        showAlert('批量导入失败: ' + data.message, 'danger');
+                    }
+                })
+                .catch(error => {
+                    showAlert('网络错误: ' + error.message, 'danger');
+                });
+            } catch (error) {
+                showAlert('JSON格式错误: ' + error.message, 'danger');
+            }
+        }
+
+        // 更新学生计数
+        function updateStudentCount(count) {
+            document.getElementById('studentCount').textContent = `总计: ${count} 个学生`;
+        }
+
+        // 格式化日期时间
+        function formatDateTime(dateString) {
+            if (!dateString) return '未知';
+            const date = new Date(dateString);
+            return date.toLocaleString('zh-CN');
+        }
+
+        // 显示提示信息
+        function showAlert(message, type) {
+            const alertDiv = document.createElement('div');
+            alertDiv.className = `alert alert-${type} alert-dismissible fade show`;
+            alertDiv.innerHTML = `
+                ${message}
+                <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+            `;
+            document.body.insertBefore(alertDiv, document.body.firstChild);
+
+            // 3秒后自动消失
+            setTimeout(() => {
+                if (alertDiv.parentNode) {
+                    alertDiv.remove();
+                }
+            }, 3000);
+        }
+
+        // 搜索框回车事件
+        document.getElementById('searchInput').addEventListener('keypress', function(e) {
+            if (e.key === 'Enter') {
+                searchStudents();
+            }
+        });
+    </script>
+</body>
+</html>

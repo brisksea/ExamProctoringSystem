@@ -66,6 +66,8 @@ class ChromeController:
 
             # 获取Chrome版本
             chrome_version = get_chrome_version()
+            if not chrome_version:
+                raise Exception("无法检测到Chrome浏览器版本，请确保Chrome已正确安装")
 
             # 获取适用于当前Chrome版本的ChromeDriver路径
             driver_path = get_chromedriver_path(chrome_version)
@@ -207,6 +209,10 @@ class ChromeController:
         if self.window_title == window_title:
             return None
         
+        # 检查window_title是否为None或空字符串
+        if not window_title:
+            return None
+            
         title = window_title.split(" - G")[0]
         try:
             # 获取所有标签页句柄           
@@ -282,6 +288,38 @@ class ChromeController:
         except Exception as e:
             print(f"重启Chrome浏览器时出错: {str(e)}")
             return "error"
+
+    def restart(self):
+        """
+        重启Chrome浏览器
+
+        Returns:
+            bool: 重启是否成功
+        """
+        try:
+            print("正在重启Chrome浏览器...")
+            
+            # 关闭现有浏览器
+            if self.driver:
+                try:
+                    self.driver.quit()
+                except Exception as e:
+                    print(f"关闭现有浏览器时出错: {str(e)}")
+                finally:
+                    self.driver = None
+            
+            # 重置窗口标题
+            self.window_title = None
+            
+            # 重新启动浏览器
+            self.start()
+            
+            print("Chrome浏览器重启成功")
+            return True
+            
+        except Exception as e:
+            print(f"重启Chrome浏览器时出错: {str(e)}")
+            return False
 
 
 

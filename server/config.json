@@ -1,0 +1,82 @@
+{
+    "allowed_apps": [
+        {"exe": "chrome.exe", "name": "谷歌浏览器"},
+        {"exe1": "msedge1.exe", "name": "Edge浏览器"},
+        {"exe1": "notepad.exe", "name": "记事本"},
+        {"exe": "calc.exe", "name": "计算器"},
+        {"exe": "devcpp.exe", "name": "Dev-C++"},
+        {"exe1": "cursor.exe", "name": "Cursor"},
+        {"exe": "mspaint.exe", "name": "画图"},
+        {"exe": "evcapture.exe", "name": "录屏"},
+        {"exe": "ConsolePauser.exe", "name": "ConsolePauser"},
+        {"exe": "code.exe", "name": "vscode"},
+        {"exe": "putty.exe", "name": "putty"},
+        {"exe": "Octopus.exe", "name": "八爪鱼"},
+        {"exe": "excel.exe", "name": "excel"}
+
+    ],
+    "allowed_executables": [
+        {"path": "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe", "name": "谷歌浏览器"},
+        {"path1": "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge1.exe", "name": "Edge浏览器"}
+    ],
+
+    "allowed_urls": [
+        "https://www.luogu.com.cn",
+        "https://vjudge.net",
+	"http://fanyi.youdao.com",
+	"https://cdn.vjudge.net.cn",
+        "https://cn1.bing.com",
+	"http://10.188.2.252:8080",
+	"https://pintia.cn/home",
+	"https://pintia.cn/problem-sets/2004597265375334400",
+	"https://pintia.cn/auth/login"
+    ],
+    "allowed_url_patterns": [
+	"^https://.*vjudge.net/.*$",
+        "^https://exam\\.cn/.*$"
+    ],
+    "default_url": "https://ac.nowcoder.com/",
+    "exam_time_limit": 120,
+    "chrome_settings": {
+        "disable_extensions": true,
+        "disable_dev_tools": true,
+        "disable_downloads": false,
+        "disable_printing": false,
+        "disable_new_tabs": false
+    },
+    "server_url": "http://10.188.2.252:5000",
+    "enable_server_reporting": true,
+    "screenshot_on_violation": true,
+    "end_violation_foreground_process": false,
+    "show_violation_warning": false,
+    "enable_screen_recording": true,    
+    "enable_screenshot_upload": false,
+    "screen_recording": {
+        "recording": {
+            "enabled": true,
+            "fps": 2,
+            "quality": 80,
+            "bitrate": 200000,
+            "interval": 60,
+            "codec":"mp4",
+            "scale_ratio": 0.5
+        },
+        "upload": {
+            "strategy": "distributed",
+            "interval": 60,
+            "max_delay": 60,
+            "batch_size": 5,
+            "retry_count": 3,
+            "timeout": 60
+        }
+    },
+    "mysql": {
+        "host": "localhost",
+        "port": 3306,
+        "user": "debian-sys-maint",
+        "password": "bGEtT3EfFKGLhYRS",
+        "database": "monitoring"
+    },
+    "data_dir1": "/data/supervise/server_data",
+    "data_dir": "/home/zq/project/supervise/server_data"
+}

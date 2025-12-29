@@ -110,7 +110,12 @@ class AppMonitor:
 
             # 如果是Chrome浏览器
             if process_name.lower() == "chrome.exe":
-                return self.chrome_controller.check(pid, window_title)
+                # 确保window_title不为None或空字符串
+                if window_title and window_title.strip():
+                    return self.chrome_controller.check(pid, window_title)
+                else:
+                    # window_title为空，跳过Chrome检查
+                    return None
 
 
             # 跳过系统进程和自身
