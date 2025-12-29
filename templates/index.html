@@ -467,6 +467,59 @@
         </div>
     </div>
 
+    <!-- 编辑考试模态框 -->
+    <div class="modal fade" id="editExamModal" tabindex="-1">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">编辑考试信息</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <form id="editExamForm">
+                        <input type="hidden" id="edit-exam-id" name="exam_id">
+                        <div class="mb-3">
+                            <label class="form-label">考试名称</label>
+                            <input type="text" class="form-control" name="name" id="edit-exam-name" required>
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label">开始时间</label>
+                            <input type="datetime-local" class="form-control" name="start_time" id="edit-exam-start-time" required>
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label">结束时间</label>
+                            <input type="datetime-local" class="form-control" name="end_time" id="edit-exam-end-time" required>
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label">监控生效延时(分钟)</label>
+                            <input type="number" class="form-control" name="delay_min" id="edit-exam-delay-min" min="0" value="0">
+                            <div class="form-text">考试开始后延迟多少分钟开始监控，0为立即生效</div>
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label">默认网站（可选）</label>
+                            <input type="text" class="form-control" name="default_url" id="edit-exam-default-url" placeholder="如 https://pintia.com">
+                            <div class="form-text">本场考试专用，留空则使用全局配置</div>
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label">浏览器设置</label>
+                            <div class="form-check">
+                                <input class="form-check-input" type="checkbox" id="edit-exam-disable-new-tabs" name="disable_new_tabs">
+                                <label class="form-check-label" for="edit-exam-disable-new-tabs">
+                                    禁止浏览器多标签页
+                                </label>
+                                <div class="form-text">启用后，学生只能使用单个标签页浏览</div>
+                            </div>
+                        </div>
+                    </form>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+                    <button type="button" class="btn btn-primary" onclick="updateExam()">保存修改</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <!-- 删除考试确认模态框 -->
     <div class="modal fade" id="deleteExamModal" tabindex="-1">
         <div class="modal-dialog">
@@ -708,7 +761,10 @@
                                     ${exam.disable_new_tabs ? `<span class='text-muted'>浏览器设置: <span style='color:#f44336;'>禁止多标签页</span></span><br>` : ''}
                                 </p>
                             </div>
-                            <div class="card-footer d-flex justify-content-end">
+                            <div class="card-footer d-flex justify-content-end gap-2">
+                                <button class="btn btn-sm btn-outline-primary" onclick="editExam(event, ${exam.id})" title="编辑考试信息">
+                                    <i class="bi bi-pencil"></i> 编辑
+                                </button>
                                 <button class="btn btn-sm btn-danger" onclick="confirmDeleteExam(event, ${exam.id}, '${exam.name}')" ${exam.status === 'active' ? 'disabled' : ''}>
                                     <i class="bi bi-trash"></i> 删除
                                 </button>
@@ -1066,7 +1122,7 @@
 
                 masonryContainer.append(`
                     <div class="masonry-item">
-                        <video controls width="100%" preload="none" class="lazy-video" data-src="${r.download_url}" onerror="console.error('Failed to load video: ${r.download_url}')">
+                        <video controls width="100%" preload="metadata" class="lazy-video" data-src="${r.download_url}" onerror="console.error('Failed to load video: ${r.download_url}')">
                             您的浏览器不支持视频播放
                         </video>
                         <div class="timestamp">
@@ -1087,7 +1143,7 @@
             merged.forEach(r => {
                 masonryContainer.append(`
                     <div class="masonry-item">
-                        <video controls width="100%" preload="none" class="lazy-video" data-src="${r.download_url}"></video>
+                        <video controls width="100%" preload="metadata" class="lazy-video" data-src="${r.download_url}"></video>
                         <div class="timestamp">${r.filename}</div>
                         <a href="${r.download_url}" target="_blank" class="btn btn-sm btn-outline-success mt-1">下载合并录屏</a>
                     </div>
@@ -1096,33 +1152,53 @@
             setupVideoLazyLoading();
         }
 
+
         // 懒加载可见区域内的视频
         let __videoObserver;
         function setupVideoLazyLoading() {
             const videos = document.querySelectorAll('#studentScreenshotModal .masonry-container video.lazy-video[data-src]');
             if (!('IntersectionObserver' in window)) {
-                // 兼容性降级：直接加载首屏
+                // 兼容性降级：直接加载首屏视频
                 videos.forEach(v => {
-                    if (!v.src && v.dataset.src) v.src = v.dataset.src;
+                    if (!v.src && v.dataset.src) {
+                        v.src = v.dataset.src;
+                        v.removeAttribute('data-src');
+                        v.classList.remove('lazy-video');
+                    }
                 });
                 return;
             }
-            if (!__videoObserver) {
-                __videoObserver = new IntersectionObserver((entries) => {
-                    entries.forEach(entry => {
-                        if (entry.isIntersecting) {
-                            const v = entry.target;
-                            if (!v.src && v.dataset.src) {
-                                v.src = v.dataset.src;
-                                v.removeAttribute('data-src');
-                            }
-                            __videoObserver.unobserve(v);
-                        }
-                    });
-                }, { root: document.querySelector('#studentScreenshotModal .modal-body'), rootMargin: '200px 0px', threshold: 0.01 });
+            
+            // 清理之前的观察器
+            if (__videoObserver) {
+                __videoObserver.disconnect();
             }
+            
+            __videoObserver = new IntersectionObserver((entries) => {
+                entries.forEach(entry => {
+                    if (entry.isIntersecting) {
+                        const v = entry.target;
+                        if (!v.src && v.dataset.src) {
+                            console.log('Loading video:', v.dataset.src);
+                            v.src = v.dataset.src;
+                            v.removeAttribute('data-src');
+                            v.classList.remove('lazy-video');
+                            // 触发视频加载
+                            v.load();
+                        }
+                        __videoObserver.unobserve(v);
+                    }
+                });
+            }, { 
+                root: document.querySelector('#studentScreenshotModal .modal-body'), 
+                rootMargin: '200px 0px', // 提前200px开始加载
+                threshold: 0.01 
+            });
+            
             videos.forEach(v => {
-                if (v.dataset && v.dataset.src) __videoObserver.observe(v);
+                if (v.dataset && v.dataset.src) {
+                    __videoObserver.observe(v);
+                }
             });
         }
 
@@ -1315,6 +1391,122 @@
 
             // 显示模态框
             $('#deleteExamModal').modal('show');
+        }
+
+        // 编辑考试
+        function editExam(event, examId) {
+            // 阻止事件冒泡，避免触发selectExam
+            event.stopPropagation();
+
+            // 获取考试详情
+            $.ajax({
+                url: `/api/exams/${examId}`,
+                method: 'GET',
+                success: function(response) {
+                    if (response.status === 'success') {
+                        const exam = response.exam;
+                        
+                        // 填充表单数据
+                        $('#edit-exam-id').val(exam.id);
+                        $('#edit-exam-name').val(exam.name);
+                        
+                        // 处理时间格式
+                        if (exam.start_time) {
+                            const startTime = formatDateTimeForInput(exam.start_time);
+                            $('#edit-exam-start-time').val(startTime);
+                        }
+                        if (exam.end_time) {
+                            const endTime = formatDateTimeForInput(exam.end_time);
+                            $('#edit-exam-end-time').val(endTime);
+                        }
+                        
+                        $('#edit-exam-delay-min').val(exam.delay_min || 0);
+                        $('#edit-exam-default-url').val(exam.default_url || '');
+                        $('#edit-exam-disable-new-tabs').prop('checked', exam.disable_new_tabs === 1);
+                        
+                        // 显示模态框
+                        $('#editExamModal').modal('show');
+                    }
+                },
+                error: function(xhr) {
+                    alert('获取考试信息失败: ' + (xhr.responseJSON?.message || '未知错误'));
+                }
+            });
+        }
+
+        // 格式化日期时间为input[type="datetime-local"]所需的格式
+        function formatDateTimeForInput(dateTimeStr) {
+            if (!dateTimeStr) return '';
+            
+            try {
+                let date;
+                if (dateTimeStr.includes('T')) {
+                    date = new Date(dateTimeStr);
+                } else {
+                    date = new Date(dateTimeStr);
+                }
+                
+                if (isNaN(date.getTime())) {
+                    return '';
+                }
+                
+                // 转换为本地时间的ISO字符串（去掉秒和毫秒）
+                const year = date.getFullYear();
+                const month = String(date.getMonth() + 1).padStart(2, '0');
+                const day = String(date.getDate()).padStart(2, '0');
+                const hours = String(date.getHours()).padStart(2, '0');
+                const minutes = String(date.getMinutes()).padStart(2, '0');
+                
+                return `${year}-${month}-${day}T${hours}:${minutes}`;
+            } catch (error) {
+                console.error('时间格式化错误:', error, dateTimeStr);
+                return '';
+            }
+        }
+
+        // 更新考试信息
+        function updateExam() {
+            const form = $('#editExamForm');
+            const formData = new FormData();
+
+            // 获取表单数据
+            const examId = form.find('#edit-exam-id').val();
+            const name = form.find('#edit-exam-name').val();
+            const start_time = form.find('#edit-exam-start-time').val();
+            const end_time = form.find('#edit-exam-end-time').val();
+            const default_url = form.find('#edit-exam-default-url').val();
+            const delay_min = form.find('#edit-exam-delay-min').val();
+            const disable_new_tabs = form.find('#edit-exam-disable-new-tabs').is(':checked');
+
+            // 验证必填字段
+            if (!name || !start_time || !end_time) {
+                alert('请填写所有必填字段');
+                return;
+            }
+
+            // 添加到 FormData
+            formData.append('name', name);
+            formData.append('start_time', start_time);
+            formData.append('end_time', end_time);
+            if (default_url) formData.append('default_url', default_url);
+            if (delay_min) formData.append('delay_min', delay_min);
+            formData.append('disable_new_tabs', disable_new_tabs);
+
+            $.ajax({
+                url: `/api/exams/${examId}`,
+                method: 'PUT',
+                data: formData,
+                processData: false,
+                contentType: false,
+                success: function(response) {
+                    $('#editExamModal').modal('hide');
+                    fetchData();
+                    alert(response.message);
+                },
+                error: function(xhr) {
+                    alert('更新考试失败: ' + (xhr.responseJSON?.message || '未知错误'));
+                }
+            });
         }
 
         // 删除考试
