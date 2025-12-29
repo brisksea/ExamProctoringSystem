@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>监控登录 - 考试监控系统</title>
+    <link href="/static/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+        body {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .login-container {
+            background: white;
+            padding: 40px;
+            border-radius: 10px;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.2);
+            width: 100%;
+            max-width: 400px;
+        }
+        .login-title {
+            text-align: center;
+            margin-bottom: 30px;
+            color: #333;
+        }
+        .login-title i {
+            font-size: 48px;
+            color: #667eea;
+            margin-bottom: 10px;
+        }
+        .error-message {
+            color: #dc3545;
+            font-size: 14px;
+            margin-top: 10px;
+            display: none;
+        }
+    </style>
+</head>
+<body>
+    <div class="login-container">
+        <div class="login-title">
+            <h2>🔒 监控登录</h2>
+            <p class="text-muted">请输入监控密码</p>
+        </div>
+        <form id="monitorLoginForm">
+            <div class="mb-3">
+                <label class="form-label">监控密码</label>
+                <input type="password" class="form-control" id="monitor_password" name="monitor_password"
+                       placeholder="请输入监控密码" required autofocus>
+            </div>
+            <div class="error-message" id="error-message">密码错误，请重试</div>
+            <button type="submit" class="btn btn-primary w-100 mt-3">登录</button>
+        </form>
+        <div class="text-center mt-3">
+            <a href="/" class="text-muted small">返回管理页面</a>
+        </div>
+    </div>
+
+    <script src="/static/js/jquery-3.6.0.min.js"></script>
+    <script src="/static/js/bootstrap.bundle.min.js"></script>
+    <script>
+        $('#monitorLoginForm').on('submit', function(e) {
+            e.preventDefault();
+
+            const password = $('#monitor_password').val();
+
+            $.ajax({
+                url: '/api/monitor/login',
+                method: 'POST',
+                contentType: 'application/json',
+                data: JSON.stringify({ monitor_password: password }),
+                success: function(response) {
+                    if (response.status === 'success') {
+                        // 登录成功，跳转到监控页面
+                        window.location.href = `/monitor/${response.exam_id}`;
+                    }
+                },
+                error: function(xhr) {
+                    $('#error-message').show();
+                    $('#monitor_password').val('').focus();
+                }
+            });
+        });
+    </script>
+</body>
+</html>
