@@ -306,6 +306,8 @@ class ExamClient:
         self.log_file = os.path.join(self.log_dir, f"client_{time.strftime('%Y-%m-%d')}.log")
 
         # 其他属性初始化将在登录成功后进行
+        self.end_exam_timer_id = None
+        self.remind_timer_id = None
 
     def get_screenshot_interval_from_config(self):
         # 优先从 config_manager.config 获取
@@ -524,16 +526,16 @@ class ExamClient:
     def heartbeat_loop(self):
         """心跳循环，定期向服务器发送心跳，带连接失败计数"""
         while True:
-            #print(f"[DEBUG][heartbeat_loop] before: connected_to_server={self.connected_to_server}, server_url={self.server_url}")
+            print(f"[DEBUG][heartbeat_loop] before: connected_to_server={self.connected_to_server}")
             if self.api_client:
-                # print(f"[DEBUG][heartbeat_loop] send_heartbeat: success={success}, error_message={error_message}")
-                success, error_message = self.api_client.send_heartbeat(self.student_id, self.exam_id)
-                # print(f"[DEBUG][heartbeat_loop] after: connected_to_server={self.connected_to_server}")
+                print(f"[DEBUG][heartbeat_loop] before: send_heartbeat")
+                success, response_data = self.api_client.send_heartbeat(self.student_id, self.exam_id)
+                print(f"[DEBUG][heartbeat_loop] after: send_heartbeat")
                 if not success:
                     self.connection_failures += 1
                     # 只有连续失败多次才记录错误，避免偶发网络问题的日志噪音
                     if self.connection_failures >= 3:
-                        self.log(f"心跳连续失败 {self.connection_failures} 次: {error_message}")
+                        self.log(f"心跳连续失败 {self.connection_failures} 次: {response_data}")
                     
                     # 连续失败次数过多时才标记为断开连接
                     if self.connection_failures >= self.max_connection_failures:
@@ -544,6 +546,16 @@ class ExamClient:
                         self.log(f"网络连接恢复，之前失败 {self.connection_failures} 次")
                         self.connection_failures = 0
                     self.connected_to_server = True
+
+                    print(f"[DEBUG][heartbeat_loop] response_data: {response_data}")
+
+                    # 处理服务器返回的参数
+                    if isinstance(response_data, dict):
+                        # 处理考试延时
+                        new_end_time = response_data.get("end_time")
+                        if new_end_time and new_end_time != self.exam_end_time:
+                            # 在主线程更新UI和定时器
+                            self.root.after(0, lambda: self.update_exam_time(new_end_time))
                     
                     # 每隔一段时间记录连接质量统计
                     if hasattr(self.api_client, 'get_connection_stats'):
@@ -665,8 +677,8 @@ class ExamClient:
                 dt = datetime.fromisoformat(self.exam_end_time)
                 exam_time_str += f"结束: {dt.strftime("%Y-%m-%d %H:%M:%S")}"
             if exam_time_str:
-                exam_time_label = tk.Label(exam_info_frame, text=exam_time_str, font=("Arial", 11), fg="#37474f")
-                exam_time_label.pack(side=tk.TOP)
+                self.exam_time_label = tk.Label(exam_info_frame, text=exam_time_str, font=("Arial", 11), fg="#37474f")
+                self.exam_time_label.pack(side=tk.TOP)
 
             # 用户信息
             user_frame = tk.Frame(header_frame)
@@ -1094,27 +1106,30 @@ class ExamClient:
 
     def end_exam(self):
         """结束考试"""
-        # 确认是否结束考试
-        if self.show_confirmation("确认", "您确定要结束考试并退出监控系统吗？"):
-            self.log("用户选择结束考试")
+        # 取消倒计时定时器
+        if hasattr(self, 'end_exam_timer_id') and self.end_exam_timer_id:
+            self.root.after_cancel(self.end_exam_timer_id)
+            self.end_exam_timer_id = None
+        if hasattr(self, 'remind_timer_id') and self.remind_timer_id:
+            self.root.after_cancel(self.remind_timer_id)
+            self.remind_timer_id = None
 
-            # 停止录屏
-            if hasattr(self, 'screen_recorder') and self.screen_recorder:
-                self.screen_recorder.stop()
-                self.log("录屏功能已停止")
+        if not self.show_confirmation("结束考试", "您确定要提交并结束考试并退出监控系统吗？"):
+            return
+        self.log("用户选择结束考试")
 
-            # 停止监控
-            if self.monitoring:
-                self.stop_monitoring()
+        # 停止监控（这会处理录屏、浏览器等停止逻辑）
+        if self.monitoring:
+            self.stop_monitoring()
 
-            # 发送登出信息
-            self.send_logout()
+        # 发送登出信息
+        self.send_logout()
 
-            # 记录用户退出
-            self.write_log(f"用户 '{self.username}' 主动结束考试并退出系统")
+        # 记录用户退出
+        self.write_log(f"用户 '{self.username}' 主动结束考试并退出系统")
 
-            # 销毁窗口
-            self.root.destroy()
+        # 销毁窗口
+        self.root.destroy()
 
     def on_close(self):
         """窗口关闭事件"""
@@ -1446,8 +1461,42 @@ class ExamClient:
                 self.log(f"截图上传线程异常: {str(e)}")
             time.sleep(self.screenshot_interval)
 
+    def update_exam_time(self, new_end_time):
+        """更新考试结束时间"""
+        if not new_end_time or new_end_time == self.exam_end_time:
+            return
+
+        self.log(f"监考老师为您延长了考试时间。新的结束时间：{new_end_time}")
+        self.write_log(f"考试时间更新：{self.exam_end_time} -> {new_end_time}")
+        self.exam_end_time = new_end_time
+
+        # 更新UI
+        if hasattr(self, 'exam_time_label'):
+            try:
+                exam_time_str = ""
+                if self.exam_start_time:
+                    dt_start = datetime.fromisoformat(self.exam_start_time)
+                    exam_time_str += f"开始: {dt_start.strftime('%Y-%m-%d %H:%M:%S')}  "
+
+                dt_end = datetime.fromisoformat(self.exam_end_time)
+                exam_time_str += f"结束: {dt_end.strftime('%Y-%m-%d %H:%M:%S')}"
+                self.exam_time_label.config(text=exam_time_str)
+            except Exception as e:
+                self.log(f"更新时间显示失败: {str(e)}")
+
+        # 重新调度定时器
+        self.start_exam_end_time_check()
+
     def start_exam_end_time_check(self):
         """启动考试结束时间检查"""
+        # 取消之前的定时器
+        if self.end_exam_timer_id:
+            self.root.after_cancel(self.end_exam_timer_id)
+            self.end_exam_timer_id = None
+        if self.remind_timer_id:
+            self.root.after_cancel(self.remind_timer_id)
+            self.remind_timer_id = None
+
         if not self.exam_end_time:
             self.log("未设置考试结束时间，无法自动结束考试")
             return
@@ -1469,12 +1518,12 @@ class ExamClient:
             else:
                 # 设置定时器，在考试结束时自动退出
                 self.log(f"系统将在考试结束时间 {end_time.strftime('%Y-%m-%d %H:%M:%S')} 自动退出")
-                self.root.after(int(time_diff), self.auto_end_exam)
+                self.end_exam_timer_id = self.root.after(int(time_diff), self.auto_end_exam)
 
                 # 设置提前5分钟的提醒
                 pre_min = 5
                 if time_diff > pre_min * 60 * 1000:
-                    self.root.after(int(time_diff - pre_min * 60 * 1000), 
+                    self.remind_timer_id = self.root.after(int(time_diff - pre_min * 60 * 1000), 
                                     lambda: self.show_warning("考试即将结束", "注意：考试将在5分钟后结束，请及时保存您的工作。系统将在考试结束时自动关闭。", 5)
                       ) 
 
@@ -1496,9 +1545,9 @@ class ExamClient:
                 10  # 10秒后自动关闭
             )
 
-            # 停止监控（异步停止录屏，不等待上传完成）
+            # 停止监控（同步等待所有录屏上传完成）
             if self.monitoring:
-                self.stop_monitoring(fast_exit=True)
+                self.stop_monitoring(fast_exit=False)
 
             # 发送登出信息（使用较短的超时）
             try:
