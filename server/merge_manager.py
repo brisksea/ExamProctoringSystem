@@ -8,14 +8,14 @@ import cv2
 
 class MergeManager:
     def __init__(self, data_dir="server_data"):
+        print("init:", os.getpid())
         # 使用同一个目录
         self.data_dir = data_dir
 
         self.task_queue = []
         self.lock = threading.Lock()
-        self.running = True
-        self.worker = threading.Thread(target=self._worker_loop, daemon=True)
-        self.worker.start()
+        self.running = False
+        self.worker = None
         self.logger = logging.getLogger("MergeManager")
         logging.basicConfig(
             level=logging.INFO,
@@ -25,6 +25,17 @@ class MergeManager:
                 logging.StreamHandler()
             ]
         )
+
+    def start(self):
+        """启动 MergeManager 工作线程"""
+        if self.running:
+            self.logger.warning("MergeManager 已经在运行中")
+            return
+
+        self.running = True
+        self.worker = threading.Thread(target=self._worker_loop, daemon=True)
+        self.worker.start()
+        self.logger.info(f"MergeManager 已启动 (PID: {os.getpid()})")
 
     def add_merge_task(self, exam_id, student_id, student_name):
         with self.lock:
@@ -41,8 +52,8 @@ class MergeManager:
                 print("process task:", os.getpid())
                 self._process_task(*task)
             else:
-                print("no task:", os.getpid())
-                time.sleep(10)
+                #print("no task:", os.getpid())
+                time.sleep(2)
 
     def _process_task(self, exam_id, student_id, student_name):
         try:
@@ -148,5 +159,12 @@ class MergeManager:
                 self.logger.warning(f"删除临时文件失败: {e}")
 
     def stop(self):
+        """停止 MergeManager 工作线程"""
+        if not self.running:
+            self.logger.warning("MergeManager 未在运行")
+            return
+
         self.running = False
-        self.worker.join() 
+        if self.worker:
+            self.worker.join(timeout=5)
+        self.logger.info(f"MergeManager 已停止 (PID: {os.getpid()})") 

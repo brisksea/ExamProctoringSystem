@@ -78,5 +78,5 @@
         "database": "monitoring"
     },
     "data_dir1": "/data/supervise/server_data",
-    "data_dir": "/home/zq/project/supervise/server_data"
+    "data_dir": "/home/zq/project/supervise/server/server_data"
 }

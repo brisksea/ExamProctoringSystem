@@ -1,0 +1,30 @@
+# Python / Flask 项目
+__pycache__/
+*.pyc
+*.pyo
+
+# 日志
+*.log
+
+# 临时文件
+*.tmp
+*.swp
+
+# 配置文件（本地专用）
+server/config.json
+client/config.json
+
+# 打包输出
+dist/
+build/
+
+test*
+check*
+
+logs/
+server_data/
+venv/
+chromedrivers/
+
+
+*.pid

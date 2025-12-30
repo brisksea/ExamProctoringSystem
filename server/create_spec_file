@@ -1,0 +1,96 @@
+def create_spec_file(app_name, icon_path=None, add_data=None, main_script='main.py', one_file=True):
+    """创建PyInstaller规格文件"""
+    # 根据one_file参数决定生成单文件还是多文件应用
+    if one_file:
+        # 单文件应用 (.exe)
+        exe_section = f"""exe = EXE(
+    pyz,
+    a.scripts,
+    a.binaries,
+    a.zipfiles,
+    a.datas,
+    [],
+    name='{app_name}',
+    debug=False,
+    bootloader_ignore_signals=False,
+    strip=False,
+    upx=True,
+    upx_exclude=[],
+    runtime_tmpdir=None,
+    console=False,
+    disable_windowed_traceback=False,
+    argv_emulation=False,
+    target_arch=None,
+    codesign_identity=None,
+    entitlements_file=None,
+    {f"icon='{icon_path}'," if icon_path else ''}
+)
+"""
+    else:
+        # 多文件应用 (文件夹)
+        exe_section = f"""exe = EXE(
+    pyz,
+    a.scripts,
+    [],
+    exclude_binaries=True,
+    name='{app_name}',
+    debug=False,
+    bootloader_ignore_signals=False,
+    strip=False,
+    upx=True,
+    console=False,
+    disable_windowed_traceback=False,
+    argv_emulation=False,
+    target_arch=None,
+    codesign_identity=None,
+    entitlements_file=None,
+    {f"icon='{icon_path}'," if icon_path else ''}
+)
+
+coll = COLLECT(
+    exe,
+    a.binaries,
+    a.zipfiles,
+    a.datas,
+    strip=False,
+    upx=True,
+    upx_exclude=[],
+    name='{app_name}',
+)
+"""
+
+    spec_content = f"""# -*- mode: python ; coding: utf-8 -*-
+
+block_cipher = None
+
+a = Analysis(
+    ['{main_script}'],
+    pathex=[],
+    binaries=[],
+    datas=[{add_data or ''}],
+    hiddenimports=[],
+    hookspath=[],
+    hooksconfig={{}},
+    runtime_hooks=[],
+    excludes=[],
+    win_no_prefer_redirects=False,
+    win_private_assemblies=False,
+    cipher=block_cipher,
+    noarchive=False,
+)
+
+pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
+
+{exe_section}
+"""
+    
+    spec_path = f"{app_name}.spec"
+    try:
+        with open(spec_path, 'w', encoding='utf-8') as f:
+            f.write(spec_content)
+        
+        print_color(f"已创建规格文件: {spec_path}")
+        return spec_path
+    except Exception as e:
+        print_color(f"创建规格文件失败: {e}", "red")
+        return None 
