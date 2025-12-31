@@ -118,45 +118,11 @@ class BaseBrowserController:
         else:
             self.driver.execute_script("window.location.href = 'about:blank';")
 
+
     def check(self, pid, window_title):
         if not self.is_controlled(pid):
             return "未受控的浏览器，请切换到允许的浏览器进行考试"
-        
-        try:
-            # 尝试使用CDP Check，适用于Chrome和Edge (Chromium based)
-            result = self.driver.execute_cdp_cmd('Target.getTargets', {})
-            
-            # CDP 返回的是字典，包含 targetInfos 键
-            # 处理不同的返回格式：可能是字典或直接是列表
-            if isinstance(result, dict):
-                targets = result.get('targetInfos', [])
-            elif isinstance(result, list):
-                targets = result
-            else:
-                # 如果返回格式不符合预期，回退到旧方法
-                raise ValueError(f"Unexpected CDP response format: {type(result)}")
-            
-            # 检查标签页数量
-            page_targets = [t for t in targets if isinstance(t, dict) and t.get('type') == 'page']
-            if self.disable_new_tabs and len(page_targets) > 1:
-                return f"检测到多个标签页，请关闭多余标签页"
 
-            # 检查每个标签页的URL
-            for target in page_targets:
-                url = target.get('url', '')
-                if not self._is_url_allowed(url):
-                    return f"未授权的URL: {url}，切换到允许的URL进行考试"
-                    
-        except Exception as e:
-            # 如果CDP失败，回退到原来的方法
-            print(f"CDP检查失败，回退到常规检查: {str(e)}")
-            return self._check_legacy(pid, window_title)
-
-        self.window_title = window_title
-        return None
-
-    def _check_legacy(self, pid, window_title):
-        """旧的检查方法，作为回退"""
         handles = self.driver.window_handles
         if self.disable_new_tabs and len(handles) > 1:
             return f"检测到多个标签页，请关闭多余标签页"
@@ -177,7 +143,9 @@ class BaseBrowserController:
                 self.driver.switch_to.window(handle)
                 url = self.driver.current_url
                 if not self._is_url_allowed(url):
-                    return f"未授权的URL: {url}，切换到允许的URL进行考试"
+                    # 自动切换到默认的起始URL
+                    self.to_default_url()
+                    return f"未授权的URL: {url}，已切换到允许的URL进行考试"
                 
                 # 尝试匹配当前窗口
                 if window_title.startswith(self.driver.title):

@@ -286,7 +286,11 @@ class ApiClient:
                             self.heartbeat_stats['avg_response_time'] * 0.8 + response_time * 0.2
                         )
                     
-                    return True, ""
+                    try:
+                        data = response.json()
+                        return True, data
+                    except Exception:
+                        return True, {}
                 else:
                     last_error = f"服务器心跳失败: HTTP {response.status_code}"
                     if attempt < self.max_retries - 1:

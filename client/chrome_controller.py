@@ -41,7 +41,7 @@ class ChromeController(BaseBrowserController):
                 driver_path = get_chromedriver_path(chrome_version)
             except Exception:
                 driver_path = None
-            
+
             if not driver_path:
                 # 如果没有本地驱动，尝试下载
                 # 注意：chrome_driver_manager.py 必须确保有 api_client 或者独立可用的下载逻辑
@@ -59,10 +59,14 @@ class ChromeController(BaseBrowserController):
             if not driver_path:
                  # 最后尝试直接 Service() 让 selenium 自己去找（通常不靠谱如果版本不一）
                  # 或者抛出异常
+                 #raise Exception("无法找到适用于当前Chrome版本的ChromeDriver，请确保已正确安装或下载")
                  pass
 
             service = Service(driver_path) if driver_path else Service()
-            self.driver = webdriver.Chrome(service=service, options=options)
+            try:
+                self.driver = webdriver.Chrome(service=service, options=options)
+            except Exception as e:
+                raise Exception(f"无驱动启动Chrome WebDriver失败: {str(e)}")
 
             # 导航到初始URL或空白页
             initial_url = url if url else self.default_url
