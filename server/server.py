@@ -401,9 +401,28 @@ def heartbeat():
     # 更新活跃（封装：DB + Redis + 上线历史）
     current_app.data_access.mark_online_activity(student_id, exam_id, ip=get_real_ip())
 
-    # 状态变更与历史在 mark_online_activity 内部处理
+    # 构建响应,检查是否有考试配置变更需要通知客户端
+    response = {"status": "success"}
 
-    return jsonify({"status": "success"})
+    # 检查Redis中是否有考试配置变更标记
+    r = current_app.data_access._get_redis()
+
+    # 检查结束时间是否变更
+    end_time_changed_key = f'exam:{exam_id}:end_time_changed'
+    new_end_time = r.get(end_time_changed_key)
+    if new_end_time:
+        # 解码并返回新的结束时间(已经是ISO格式)
+        if isinstance(new_end_time, bytes):
+            new_end_time = new_end_time.decode('utf-8')
+        response['end_time'] = new_end_time
+
+    # 未来可以扩展其他配置变更,例如:
+    # disable_new_tabs_key = f'exam:{exam_id}:disable_new_tabs_changed'
+    # new_disable_new_tabs = r.get(disable_new_tabs_key)
+    # if new_disable_new_tabs:
+    #     response['disable_new_tabs'] = new_disable_new_tabs.decode('utf-8')
+
+    return jsonify(response)
 
 @app.route('/api/logout', methods=['POST'])
 def student_logout():
@@ -940,8 +959,29 @@ def manage_exam(exam_id):
 
                 # 更新考试信息
                 success = current_app.data_access.update_exam(exam_id, update_data)
-                
+
                 if success:
+                    # 检查end_time是否变更(考试正在进行中时)
+                    if exam['status'] == 'active' and str(exam['end_time']) != str(end_time):
+                        # 设置Redis标记,通知所有在线学生
+                        # 标记值直接存储ISO格式的新end_time,30分钟后自动过期
+                        end_time_changed_key = f'exam:{exam_id}:end_time_changed'
+                        r = current_app.data_access._get_redis()
+
+                        # 将end_time转换为ISO格式
+                        try:
+                            from datetime import datetime
+                            if isinstance(end_time, str):
+                                dt = datetime.strptime(end_time, "%Y-%m-%d %H:%M:%S")
+                            else:
+                                dt = end_time
+                            iso_time = dt.isoformat()
+                        except:
+                            iso_time = str(end_time)
+
+                        r.setex(end_time_changed_key, 1800, iso_time)
+                        print(f"[考试更新] 考试 {exam_id} 结束时间变更: {exam['end_time']} -> {end_time}, 已设置Redis标记(30分钟过期)")
+
                     return jsonify({
                         "status": "success",
                         "message": "考试信息更新成功"
