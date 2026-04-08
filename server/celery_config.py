@@ -41,19 +41,21 @@ celery_app.conf.update(
     # Worker 配置
     worker_max_tasks_per_child=100,  # 每个 worker 执行100个任务后重启（防止内存泄漏）
 
-    # 任务路由
-    task_routes={
-        'celery_tasks.status_check_task': {'queue': 'status_check'},
-        'celery_tasks.merge_videos_task': {'queue': 'video_merge'},
-    },
-
     # 定时任务配置（Celery Beat）
     beat_schedule={
         'status-check-every-30-seconds': {
             'task': 'celery_tasks.status_check_task',
             'schedule': 30.0,  # 每30秒执行一次
-            'options': {'queue': 'status_check'}
         },
+    },
+
+    # 任务模块（Worker 启动时自动加载，避免循环导入）
+    include=['celery_tasks'],
+
+    # 任务队列路由配置
+    task_routes={
+        'celery_tasks.status_check_task': {'queue': 'status_check'},
+        'celery_tasks.merge_videos_task': {'queue': 'video_merge'},
     },
 
     # 日志配置
@@ -61,5 +63,5 @@ celery_app.conf.update(
     worker_task_log_format='[%(asctime)s: %(levelname)s/%(processName)s] [%(task_name)s(%(task_id)s)] %(message)s',
 )
 
-# 直接导入任务模块（celery_tasks.py 是单文件模块，不能用 autodiscover）
-import celery_tasks
+# 注意：不要在这里 import celery_tasks，会导致循环导入
+# Worker 启动时通过 -A celery_tasks 自动加载任务定义

@@ -8,10 +8,12 @@ bind = "0.0.0.0:5000"
 # CPU: 32 核，并发目标: 500 人
 # 推荐配置（300人）：12 workers
 # 高性能配置（500人）：16 workers
-workers = 24                    # 24 个 worker 进程（支持480人并发）
+#workers = 24                    # 24 个 worker 进程（支持480人并发）
+workers = 8                    # 24 个 worker 进程（支持480人并发）
 # workers = 16                  # 16 个 worker 进程（基础配置）
 worker_class = "gevent"        # 异步 IO 模式（必须使用 gevent）
-worker_connections = 200       # 每个 worker 支持 200 并发连接
+#worker_connections = 200       # 每个 worker 支持 200 并发连接
+worker_connections = 20       # 每个 worker 支持 200 并发连接
                                # 总并发能力: 24 × 200 = 4,800 连接
 
 # 超时配置（视频上传需要较长时间）

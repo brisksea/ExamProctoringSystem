@@ -103,18 +103,17 @@ def status_check_task(self):
 
                     # 考试结束30分钟后自动合并视频
                     time_since_end = (now - end_time).total_seconds()
-                    if time_since_end >= 1800:  # 30分钟 = 1800秒
-                        # 获取所有非 logout 状态的学生
+                    if 1800 <= time_since_end <= 7200:  # 30分钟~2小时内检查（避免反复触发）
+                        # 获取所有学生（不论状态），检查是否有未合并的录屏
                         students = data_access.get_exam_students(exam_id)
                         for student in students:
-                            if student['status'] != 'logout':
-                                student_id = student['student_id']
-                                # 检查学生录屏目录是否存在（存在说明未合并）
-                                student_recordings_dir = os.path.join("server_data", str(exam_id), "recordings", str(student_id))
-                                if os.path.exists(student_recordings_dir):
-                                    # 触发视频合并任务
-                                    logger.info(f"[状态检测] 触发视频合并: 考试={exam_id}, 学生={student_id} ({student.get('student_name', 'Unknown')}), 状态={student['status']}")
-                                    merge_videos_task.delay(exam_id, student_id, student.get('student_name', 'Unknown'))
+                            student_id = student['student_id']
+                            # 检查学生录屏目录是否存在（存在说明未合并）
+                            student_recordings_dir = os.path.join("server_data", str(exam_id), "recordings", str(student_id))
+                            if os.path.exists(student_recordings_dir):
+                                # 触发视频合并任务
+                                logger.info(f"[状态检测] 触发视频合并: 考试={exam_id}, 学生={student_id} ({student.get('student_name', 'Unknown')}), 状态={student['status']}")
+                                merge_videos_task.delay(exam_id, student_id, student.get('student_name', 'Unknown'))
 
                 # 只检查正在进行的考试的学生状态
                 if new_status == 'active':
@@ -244,21 +243,25 @@ def merge_videos_task(self, exam_id, student_id, student_name, data_dir="server_
                     seq_part = name_without_ext.split('_seq_')[-1]
                     seq_numbers.append(int(seq_part))
 
-                seq_numbers.sort()
+                # 使用唯一序号检查连续性（允许重复，只检查缺失）
+                unique_seqs = set(seq_numbers)
+                max_seq = max(seq_numbers)
+                expected_seqs = set(range(1, max_seq + 1))
+                missing_seqs = sorted(expected_seqs - unique_seqs)
 
-                # 检查连续性：应该是 1, 2, 3, ..., n
-                expected_seqs = list(range(1, len(seq_numbers) + 1))
-                missing_seqs = []
-
-                if seq_numbers != expected_seqs:
-                    # 找出缺失的序号
-                    all_seqs_set = set(range(1, max(seq_numbers) + 1))
-                    actual_seqs_set = set(seq_numbers)
-                    missing_seqs = sorted(all_seqs_set - actual_seqs_set)
-
-                    logger.warning(f"[视频合并] 检测到序号缺失: 考试={exam_id}, 学生={student_id}, 缺失序号={missing_seqs}, 实际序号={seq_numbers}")
+                if missing_seqs:
+                    # 有缺失序号，跳过合并
+                    logger.warning(f"[视频合并] 序号不连续，跳过合并: 考试={exam_id}, 学生={student_id}, 缺失序号={missing_seqs}, 实际序号范围=1-{max_seq}")
+                    return {
+                        "status": "skipped",
+                        "reason": "序号不连续",
+                        "missing_seqs": missing_seqs,
+                        "total_seqs": len(seq_numbers),
+                        "student_id": student_id,
+                        "exam_id": exam_id
+                    }
                 else:
-                    logger.info(f"[视频合并] 序号连续性检查通过: 序号范围 1-{len(seq_numbers)}")
+                    logger.info(f"[视频合并] 序号连续性检查通过: 序号范围 1-{max_seq}, 文件数={len(seq_numbers)}")
             except Exception as e:
                 logger.error(f"[视频合并] 序号连续性检查失败: {e}")
 
