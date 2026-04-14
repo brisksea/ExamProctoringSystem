@@ -8,7 +8,8 @@ cd "$SCRIPT_DIR"
 
 # PID文件和日志
 GUNICORN_PIDFILE="$SCRIPT_DIR/logs/gunicorn.pid"
-CELERY_WORKER_PIDFILE="$SCRIPT_DIR/logs/celery_worker.pid"
+CELERY_STATUS_WORKER_PIDFILE="$SCRIPT_DIR/logs/celery_worker_status.pid"
+CELERY_MERGE_WORKER_PIDFILE="$SCRIPT_DIR/logs/celery_worker_merge.pid"
 CELERY_BEAT_PIDFILE="$SCRIPT_DIR/logs/celery_beat.pid"
 
 mkdir -p "$SCRIPT_DIR/logs"
@@ -72,62 +73,97 @@ stop_gunicorn() {
 }
 
 start_celery_worker() {
-    if [ -f "$CELERY_WORKER_PIDFILE" ] && ps -p $(cat "$CELERY_WORKER_PIDFILE") > /dev/null 2>&1; then
-        echo "Celery Worker 已在运行"
-        return 0
-    fi
-    rm -f "$CELERY_WORKER_PIDFILE"
-
-    echo "启动 Celery Worker..."
-    celery -A celery_config worker --loglevel=info --concurrency=4 \
-        --pidfile="$CELERY_WORKER_PIDFILE" \
-        --logfile="$SCRIPT_DIR/logs/celery_worker.log" \
-        --detach
-    sleep 2
-
-    if [ -f "$CELERY_WORKER_PIDFILE" ] && ps -p $(cat "$CELERY_WORKER_PIDFILE") > /dev/null 2>&1; then
-        echo "✓ Celery Worker 启动成功"
+    # 启动状态检测 Worker
+    if [ -f "$CELERY_STATUS_WORKER_PIDFILE" ] && ps -p $(cat "$CELERY_STATUS_WORKER_PIDFILE") > /dev/null 2>&1; then
+        echo "Celery Worker (状态检测) 已在运行"
     else
-        echo "✗ Celery Worker 启动失败"
-        return 1
+        rm -f "$CELERY_STATUS_WORKER_PIDFILE"
+        echo "启动 Celery Worker (状态检测队列)..."
+        celery -A celery_config.celery_app worker --loglevel=info \
+            --queues=status_check \
+            --concurrency=1 \
+            --max-tasks-per-child=1000 \
+            --hostname=worker_status@%h \
+            --pidfile="$CELERY_STATUS_WORKER_PIDFILE" \
+            --logfile="$SCRIPT_DIR/logs/celery_worker_status.log" \
+            --detach
+        sleep 2
+        if [ -f "$CELERY_STATUS_WORKER_PIDFILE" ] && ps -p $(cat "$CELERY_STATUS_WORKER_PIDFILE") > /dev/null 2>&1; then
+            echo "✓ Celery Worker (状态检测) 启动成功"
+        else
+            echo "✗ Celery Worker (状态检测) 启动失败"
+            return 1
+        fi
+    fi
+
+    # 启动视频合并 Worker
+    if [ -f "$CELERY_MERGE_WORKER_PIDFILE" ] && ps -p $(cat "$CELERY_MERGE_WORKER_PIDFILE") > /dev/null 2>&1; then
+        echo "Celery Worker (视频合并) 已在运行"
+    else
+        rm -f "$CELERY_MERGE_WORKER_PIDFILE"
+        echo "启动 Celery Worker (视频合并队列)..."
+        celery -A celery_config.celery_app worker --loglevel=info \
+            --queues=video_merge \
+            --concurrency=2 \
+            --max-tasks-per-child=50 \
+            --hostname=worker_merge@%h \
+            --pidfile="$CELERY_MERGE_WORKER_PIDFILE" \
+            --logfile="$SCRIPT_DIR/logs/celery_worker_merge.log" \
+            --detach
+        sleep 2
+        if [ -f "$CELERY_MERGE_WORKER_PIDFILE" ] && ps -p $(cat "$CELERY_MERGE_WORKER_PIDFILE") > /dev/null 2>&1; then
+            echo "✓ Celery Worker (视频合并) 启动成功"
+        else
+            echo "✗ Celery Worker (视频合并) 启动失败"
+            return 1
+        fi
     fi
 }
 
 stop_celery_worker() {
-    # 先尝试优雅关闭主进程
-    if [ -f "$CELERY_WORKER_PIDFILE" ]; then
-        PID=$(cat "$CELERY_WORKER_PIDFILE")
+    # 停止状态检测 Worker
+    if [ -f "$CELERY_STATUS_WORKER_PIDFILE" ]; then
+        PID=$(cat "$CELERY_STATUS_WORKER_PIDFILE")
         if ps -p "$PID" > /dev/null 2>&1; then
             kill -TERM "$PID" 2>/dev/null
-            # 等待优雅关闭
             for i in {1..15}; do
                 if ! ps -p "$PID" > /dev/null 2>&1; then
                     break
                 fi
                 sleep 1
             done
-            # 如果还活着，强制杀掉
             if ps -p "$PID" > /dev/null 2>&1; then
                 kill -9 "$PID" 2>/dev/null
                 sleep 1
             fi
         fi
-        rm -f "$CELERY_WORKER_PIDFILE"
+        rm -f "$CELERY_STATUS_WORKER_PIDFILE"
     fi
 
-    # 清理所有可能残留的 celery worker 进程（包括子进程）
-    pkill -9 -f "celery.*worker" 2>/dev/null
-    # 也清理可能的 celeryd 进程
+    # 停止视频合并 Worker
+    if [ -f "$CELERY_MERGE_WORKER_PIDFILE" ]; then
+        PID=$(cat "$CELERY_MERGE_WORKER_PIDFILE")
+        if ps -p "$PID" > /dev/null 2>&1; then
+            kill -TERM "$PID" 2>/dev/null
+            for i in {1..15}; do
+                if ! ps -p "$PID" > /dev/null 2>&1; then
+                    break
+                fi
+                sleep 1
+            done
+            if ps -p "$PID" > /dev/null 2>&1; then
+                kill -9 "$PID" 2>/dev/null
+                sleep 1
+            fi
+        fi
+        rm -f "$CELERY_MERGE_WORKER_PIDFILE"
+    fi
+
+    # 清理残留的 celery worker 进程
     pkill -9 -f "celeryd.*celery_config" 2>/dev/null
     sleep 1
 
-    # 再次确认清理完毕
-    if pgrep -f "celery.*worker" > /dev/null 2>&1; then
-        echo "⚠ 警告: 仍有 celery worker 进程残留"
-        pgrep -af "celery.*worker"
-    fi
-
-    echo "✓ Celery Worker 已停止"
+    echo "✓ Celery Workers 已停止"
 }
 
 start_celery_beat() {
@@ -138,7 +174,7 @@ start_celery_beat() {
     rm -f "$CELERY_BEAT_PIDFILE"
 
     echo "启动 Celery Beat..."
-    celery -A celery_config beat --loglevel=info \
+    celery -A celery_config.celery_app beat --loglevel=info \
         --pidfile="$CELERY_BEAT_PIDFILE" \
         --logfile="$SCRIPT_DIR/logs/celery_beat.log" \
         --detach
@@ -189,10 +225,11 @@ stop_celery_beat() {
 
 show_status() {
     echo "========== 服务状态 =========="
-    for name in Gunicorn "Celery Worker" "Celery Beat"; do
+    for name in Gunicorn "Celery Worker (状态检测)" "Celery Worker (视频合并)" "Celery Beat"; do
         case "$name" in
             Gunicorn) pidfile="$GUNICORN_PIDFILE" ;;
-            "Celery Worker") pidfile="$CELERY_WORKER_PIDFILE" ;;
+            "Celery Worker (状态检测)") pidfile="$CELERY_STATUS_WORKER_PIDFILE" ;;
+            "Celery Worker (视频合并)") pidfile="$CELERY_MERGE_WORKER_PIDFILE" ;;
             "Celery Beat") pidfile="$CELERY_BEAT_PIDFILE" ;;
         esac
         if [ -f "$pidfile" ] && ps -p $(cat "$pidfile") > /dev/null 2>&1; then
