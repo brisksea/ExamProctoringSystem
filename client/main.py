@@ -420,7 +420,7 @@ class ExamClient:
 
  
             browser_started = False
-            # 2. 如果Edge失败，尝试启动 Chrome
+
             if not browser_started:
                 try:
                     self.chrome_controller = ChromeController(
@@ -436,7 +436,8 @@ class ExamClient:
                     print(f"尝试启动Chrome失败: {e}")
                     error_msg += f"Chrome启动失败: {str(e)}; "
                     self.chrome_controller = None
-            
+
+            # 2. 如果Chrome失败，尝试启动 Edge
             if not browser_started:
                 try:
                     # 检查是否有Edge
