@@ -171,6 +171,18 @@ def main():
     app_name = args.name if args.name else "考试监控客户端"
     print_color(f"开始打包 {app_name} ...", "blue")
 
+    if sys.prefix == sys.base_prefix and 'anaconda' in sys.executable.lower() or 'conda' in sys.version.lower():
+        print_color("警告: 当前似乎在使用 Anaconda 的全局环境进行打包！", "yellow")
+        print_color("Anaconda 环境中的 NumPy 会附带庞大的 MKL (Math Kernel Library) 库，这会导致打包体积暴增（从 80MB 变成接近 300MB）。", "yellow")
+        print_color("强烈建议：取消打包，并在虚拟环境 (venv) 中重新执行打包命令（如：.\\venv\\Scripts\\python.exe package_app.py）。", "yellow")
+        import time
+        for i in range(5, 0, -1):
+            print_color(f"将在 {i} 秒后继续打包...", "yellow")
+            time.sleep(1)
+
+    elif sys.prefix == sys.base_prefix:
+         print_color("提示: 当前未在虚拟环境 (venv) 中运行。如果打包体积异常大，请确保使用虚拟环境进行打包。", "yellow")
+
     if not check_pyinstaller():
         print_color("未检测到PyInstaller，正在安装...", "yellow")
         if not install_pyinstaller():

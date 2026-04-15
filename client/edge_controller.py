@@ -25,9 +25,8 @@ class EdgeController(BaseBrowserController):
             options.add_argument('--start-maximized')
             options.add_argument('--disable-gpu')
             
-            # Edge specific, similar to Chrome but for Edge
-            options.add_experimental_option("excludeSwitches", ["enable-automation"])
-            options.add_experimental_option('useAutomationExtension', False)
+            # 隐藏自动化控制标记
+            options.add_argument('--disable-blink-features=AutomationControlled')
 
             if self.disable_new_tabs:
                 options.add_argument('--disable-popup-blocking')
@@ -60,6 +59,9 @@ class EdgeController(BaseBrowserController):
             self.driver = webdriver.Edge(service=service, options=options)
 
             initial_url = url if url else self.default_url
+            # 自动补全协议前缀，新版EdgeDriver要求URL必须包含协议
+            if initial_url and not initial_url.startswith(('http://', 'https://', 'about:', 'data:', 'edge:')):
+                initial_url = 'https://' + initial_url
             self.driver.get(initial_url)
             
             # 获取 PID

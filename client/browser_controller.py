@@ -114,7 +114,11 @@ class BaseBrowserController:
 
     def to_default_url(self):
         if self.default_url:
-            self.driver.execute_script(f"window.location.href = '{self.default_url}';")
+            url = self.default_url
+            # 自动补全协议前缀
+            if not url.startswith(('http://', 'https://', 'about:', 'data:')):
+                url = 'https://' + url
+            self.driver.execute_script(f"window.location.href = '{url}';")
         else:
             self.driver.execute_script("window.location.href = 'about:blank';")
 

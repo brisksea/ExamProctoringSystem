@@ -23,9 +23,8 @@ class ChromeController(BaseBrowserController):
             options.add_argument('--disable-gpu')
             options.add_argument('--disable-software-rasterizer')
             
-            # 标记为被自动化控制，有些场景下可能需要隐藏这个标记，但在考试场景可能不强制
-            options.add_experimental_option("excludeSwitches", ["enable-automation"])
-            options.add_experimental_option('useAutomationExtension', False)
+            # 隐藏自动化控制标记
+            options.add_argument('--disable-blink-features=AutomationControlled')
 
             if self.disable_new_tabs:
                 options.add_argument('--disable-popup-blocking')
@@ -70,6 +69,9 @@ class ChromeController(BaseBrowserController):
 
             # 导航到初始URL或空白页
             initial_url = url if url else self.default_url
+            # 自动补全协议前缀，新版ChromeDriver要求URL必须包含协议
+            if initial_url and not initial_url.startswith(('http://', 'https://', 'about:', 'data:', 'chrome:')):
+                initial_url = 'https://' + initial_url
             self.driver.get(initial_url)
             
             # 获取真正的Chrome浏览器PID

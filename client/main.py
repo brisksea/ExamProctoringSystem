@@ -931,9 +931,10 @@ class ExamClient:
 
         # 停止Chrome浏览器
         try:
-            self.chrome_controller.stop()
-            self.browser_status.set("未启动")
-            self.log("Chrome浏览器已关闭")
+            if self.chrome_controller:
+                self.chrome_controller.stop()
+                self.browser_status.set("未启动")
+                self.log("Chrome浏览器已关闭")
         except Exception as e:
             self.log(f"关闭Chrome浏览器失败: {str(e)}")
 
@@ -994,9 +995,9 @@ class ExamClient:
                             # 更新上次的违规消息
                             self.last_violation_message = err_msg
 
-                            if "未授权的URL" in err_msg:
+                            if "未授权的URL" in err_msg and self.chrome_controller:
                                 self.chrome_controller.to_default_url()
-                            elif "多个标签页" in err_msg:
+                            elif "多个标签页" in err_msg and self.chrome_controller:
                                 self.chrome_controller.handle_multiple_tabs_when_disabled()
                             elif "未授权的前台应用" in err_msg:
                                 if self.config_manager.is_end_violation_foreground_process_enabled() and foreground_process:
@@ -1007,7 +1008,7 @@ class ExamClient:
                                         print(f"已结束未授权前台进程: {process_name} (PID: {foreground_process})")
                                     except Exception as e:
                                         print(f"结束未授权前台进程时出错: {str(e)}")
-                            elif "获取标签页句柄时出错" in err_msg:
+                            elif "获取标签页句柄时出错" in err_msg and self.chrome_controller:
                                 self.show_warning("警告", "获取标签页句柄时出错，浏览器将重新启动", 5)
                                 self.chrome_controller.restart()
                        
@@ -1020,9 +1021,10 @@ class ExamClient:
                     traceback.print_exc()  # 添加这行来打印详细的错误信息
 
             pass_second += check_interval
-            status = self.chrome_controller.check_and_restart_if_needed()
-            if status == 'restart':
-                pass_second = 0
+            if self.chrome_controller:
+                status = self.chrome_controller.check_and_restart_if_needed()
+                if status == 'restart':
+                    pass_second = 0
             time.sleep(check_interval)
 
     def capture_screenshot(self):
@@ -1090,7 +1092,7 @@ class ExamClient:
 
             # 更新Chrome状态
             if foreground_process and "chrome" in str(foreground_process).lower():
-                if self.chrome_controller.is_controlled(foreground_process):
+                if self.chrome_controller and self.chrome_controller.is_controlled(foreground_process):
                     self.browser_status.set("已启动 (受控模式)")
                     # 重置警告标志
                     self._chrome_warning_logged = False
