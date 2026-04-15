@@ -767,7 +767,7 @@
                     <div class="col-md-4 mb-3">
                         <div class="card exam-card exam-${exam.status}" data-exam-id="${exam.id}">
                             <div class="card-body" onclick="selectExam(${exam.id})">
-                                <h5 class="card-title">${exam.name}</h5>
+                                <h5 class="card-title">${exam.name} <small class="text-muted">(${exam.id})</small></h5>
                                 <p class="card-text">
                                     开始: ${formatChineseDateTime(exam.start_time)}<br>
                                     结束: ${formatChineseDateTime(exam.end_time)}<br>
@@ -778,11 +778,9 @@
                                 </p>
                             </div>
                             <div class="card-footer d-flex justify-content-end gap-2">
-                                ${exam.status === 'completed' ? `
-                                <button class="btn btn-sm btn-outline-success" onclick="copyExam(event, ${exam.id})" title="基于此考试创建新考试">
+                                <button class="btn btn-sm btn-outline-success" onclick="copyExam(event, ${exam.id}, '${exam.status}')" title="基于此考试创建新考试">
                                     <i class="bi bi-copy"></i> 复制
                                 </button>
-                                ` : ''}
                                 <button class="btn btn-sm btn-outline-primary" onclick="editExam(event, ${exam.id})" title="编辑考试信息">
                                     <i class="bi bi-pencil"></i> 编辑
                                 </button>
@@ -1513,11 +1511,11 @@
         }
 
         // 复制考试（基于已有考试创建新考试）
-        function copyExam(event, examId) {
+        function copyExam(event, examId, examStatus) {
             // 阻止事件冒泡，避免触发selectExam
             event.stopPropagation();
 
-            // 获取考试详情和学生名单
+            // 获取考试详情
             $.ajax({
                 url: `/api/exams/${examId}`,
                 method: 'GET',
@@ -1525,35 +1523,52 @@
                     if (response.status === 'success') {
                         const exam = response.exam;
 
-                        // 获取学生列表
-                        $.ajax({
-                            url: `/api/exams/${examId}/students`,
-                            method: 'GET',
-                            success: function(students) {
-                                // 填充创建考试表单
-                                const form = $('#createExamForm');
-                                form.find('[name="name"]').val(exam.name + ' (复制)');
-                                form.find('[name="delay_min"]').val(exam.delay_min || 0);
-                                form.find('[name="default_url"]').val(exam.default_url || '');
-                                form.find('[name="disable_new_tabs"]').prop('checked', exam.disable_new_tabs === 1);
+                        // 填充创建考试表单
+                        const form = $('#createExamForm');
+                        form.find('[name="name"]').val(exam.name + ' (复制)');
+                        form.find('[name="delay_min"]').val(exam.delay_min || 0);
+                        form.find('[name="default_url"]').val(exam.default_url || '');
+                        form.find('[name="disable_new_tabs"]').prop('checked', exam.disable_new_tabs === 1);
 
-                                // 生成学生名单文本
-                                const studentListText = students
-                                    .map(s => `${s.student_id} ${s.student_name}`)
-                                    .join('\n');
-                                form.find('[name="student_list_text"]').val(studentListText);
+                        // 复制开始和结束时间（用于设置多个考场）
+                        if (exam.start_time) {
+                            const startTime = formatDateTimeForInput(exam.start_time);
+                            form.find('[name="start_time"]').val(startTime);
+                        }
+                        if (exam.end_time) {
+                            const endTime = formatDateTimeForInput(exam.end_time);
+                            form.find('[name="end_time"]').val(endTime);
+                        }
 
-                                // 清空时间字段（需要用户重新设置）
-                                form.find('[name="start_time"]').val('');
-                                form.find('[name="end_time"]').val('');
+                        // 只有已结束的考试才复制学生名单
+                        //if (examStatus === 'completed') {
+                        //修改为所有的考试都复制学生名单
+			if (true) {
+                            // 获取学生列表
+                            $.ajax({
+                                url: `/api/exams/${examId}/students`,
+                                method: 'GET',
+                                success: function(students) {
+                                    // 生成学生名单文本
+                                    const studentListText = students
+                                        .map(s => `${s.student_id} ${s.student_name}`)
+                                        .join('\n');
+                                    form.find('[name="student_list_text"]').val(studentListText);
 
-                                // 显示模态框
-                                $('#createExamModal').modal('show');
-                            },
-                            error: function(xhr) {
-                                alert('获取学生列表失败: ' + (xhr.responseJSON?.message || '未知错误'));
-                            }
-                        });
+                                    // 显示模态框
+                                    $('#createExamModal').modal('show');
+                                },
+                                error: function(xhr) {
+                                    alert('获取学生列表失败: ' + (xhr.responseJSON?.message || '未知错误'));
+                                }
+                            });
+                        } else {
+                            // 未来的考试或进行中的考试，不复制学生名单
+                            form.find('[name="student_list_text"]').val('');
+
+                            // 显示模态框
+                            $('#createExamModal').modal('show');
+                        }
                     }
                 },
                 error: function(xhr) {

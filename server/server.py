@@ -21,12 +21,40 @@ from flask import Flask, request, render_template, jsonify, send_from_directory,
 from flask_cors import CORS
 from data_access import DataAccess
 from celery_tasks import merge_videos_task
+from download_chromedriver import download_chromedriver as auto_download_chromedriver
 
 # 配置文件路径
 CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
 
 # 全局变量，将在 create_app() 中初始化
-DATA_DIR = None
+DATA_DIR = None  # 主数据目录（SSD，考试进行中使用）
+BACKUP_DATA_DIR = None  # 备份数据目录（大容量存储，归档用）
+
+
+def get_exam_data_dir(exam_id):
+    """
+    获取指定考试的数据目录路径
+    优先查找主目录，如果不存在则查找备份目录
+
+    Args:
+        exam_id: 考试ID
+
+    Returns:
+        考试数据目录的完整路径，如果都不存在则返回主目录路径（用于新建）
+    """
+    # 优先检查主目录
+    primary_exam_dir = os.path.join(DATA_DIR, str(exam_id))
+    if os.path.exists(primary_exam_dir):
+        return primary_exam_dir
+
+    # 如果配置了备份目录，检查备份目录
+    if BACKUP_DATA_DIR:
+        backup_exam_dir = os.path.join(BACKUP_DATA_DIR, str(exam_id))
+        if os.path.exists(backup_exam_dir):
+            return backup_exam_dir
+
+    # 都不存在，返回主目录路径（用于新建考试）
+    return primary_exam_dir
 
 
 def get_real_ip():
@@ -52,30 +80,52 @@ def get_real_ip():
 
 # 创建Flask应用
 def create_app():
-    global DATA_DIR
-    
+    global DATA_DIR, BACKUP_DATA_DIR
+
     app = Flask(__name__)
 
-    # 初始化 DATA_DIR（从配置文件读取，支持相对/绝对路径）
+    # 初始化 DATA_DIR 和 BACKUP_DATA_DIR（从配置文件读取）
     try:
         with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
             config = json.load(f)
+
+        # 读取主数据目录配置
         config_data_dir = config.get('data_dir', './server_data')
-        # 如果是相对路径，转换为绝对路径（相对于脚本目录）
         if not os.path.isabs(config_data_dir):
             DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), config_data_dir)
         else:
             DATA_DIR = config_data_dir
+
+        # 读取备份数据目录配置（可选）
+        backup_dir = config.get('backup_data_dir')
+        if backup_dir:
+            if not os.path.isabs(backup_dir):
+                BACKUP_DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), backup_dir)
+            else:
+                BACKUP_DATA_DIR = backup_dir
+            print(f"备份数据目录: {BACKUP_DATA_DIR}")
+        else:
+            BACKUP_DATA_DIR = None
+            print("未配置备份数据目录")
+
     except Exception as e:
         print(f"读取配置文件失败，使用默认路径: {e}")
         DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "server_data")
+        BACKUP_DATA_DIR = None
 
-    # 确保数据目录存在
+    # 确保主数据目录存在
     if not os.path.exists(DATA_DIR):
         os.makedirs(DATA_DIR)
-        print(f"已创建数据目录: {DATA_DIR}")
+        print(f"已创建主数据目录: {DATA_DIR}")
     else:
-        print(f"数据目录: {DATA_DIR}")
+        print(f"主数据目录: {DATA_DIR}")
+
+    # 确保备份数据目录存在（如果配置了）
+    if BACKUP_DATA_DIR:
+        if not os.path.exists(BACKUP_DATA_DIR):
+            os.makedirs(BACKUP_DATA_DIR)
+            print(f"已创建备份数据目录: {BACKUP_DATA_DIR}")
+
 
     # 设置文件上传配置
     app.config['MAX_CONTENT_LENGTH'] = 500 * 1024 * 1024  # 500MB 最大文件大小
@@ -338,12 +388,12 @@ def login():
         result = current_app.data_access.handle_student_login(student_name, exam_id, student_id, ip)
 
         if result.get('status') == 'success':
-            # 为学生创建专用的截图目录
+            # 为学生创建专用的截图目录（考试进行中，使用主目录）
             student_screenshot_dir = os.path.join(DATA_DIR, str(exam_id), "screenshots", str(student_id))
             if not os.path.exists(student_screenshot_dir):
                 os.makedirs(student_screenshot_dir)
 
-            # 为学生创建专用的录屏目录
+            # 为学生创建专用的录屏目录（考试进行中，使用主目录）
             student_recording_dir = os.path.join(DATA_DIR, str(exam_id), "recordings", str(student_id))
             if not os.path.exists(student_recording_dir):
                 os.makedirs(student_recording_dir)
@@ -401,9 +451,28 @@ def heartbeat():
     # 更新活跃（封装：DB + Redis + 上线历史）
     current_app.data_access.mark_online_activity(student_id, exam_id, ip=get_real_ip())
 
-    # 状态变更与历史在 mark_online_activity 内部处理
+    # 构建响应,检查是否有考试配置变更需要通知客户端
+    response = {"status": "success"}
 
-    return jsonify({"status": "success"})
+    # 检查Redis中是否有考试配置变更标记
+    r = current_app.data_access._get_redis()
+
+    # 检查结束时间是否变更
+    end_time_changed_key = f'exam:{exam_id}:end_time_changed'
+    new_end_time = r.get(end_time_changed_key)
+    if new_end_time:
+        # 解码并返回新的结束时间(已经是ISO格式)
+        if isinstance(new_end_time, bytes):
+            new_end_time = new_end_time.decode('utf-8')
+        response['end_time'] = new_end_time
+
+    # 未来可以扩展其他配置变更,例如:
+    # disable_new_tabs_key = f'exam:{exam_id}:disable_new_tabs_changed'
+    # new_disable_new_tabs = r.get(disable_new_tabs_key)
+    # if new_disable_new_tabs:
+    #     response['disable_new_tabs'] = new_disable_new_tabs.decode('utf-8')
+
+    return jsonify(response)
 
 @app.route('/api/logout', methods=['POST'])
 def student_logout():
@@ -435,7 +504,7 @@ def student_logout():
             # 更新 Redis 实时状态（通过 DataAccess 封装）
             current_app.data_access.set_student_realtime_status(exam_id, student_id, status='logout')
 
-        # 检查本地是否有该学生的视频片段
+        # 检查本地是否有该学生的视频片段（只检查主目录，考试进行中数据在主目录）
         student_recordings_dir = os.path.join(DATA_DIR, str(exam_id), "recordings", str(student_id))
         has_local_videos = False
 
@@ -497,7 +566,7 @@ def report_violation():
     # 保存截图
     filename = f"{student_id}-{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
 
-    # 创建违规截图目录
+    # 创建违规截图目录（考试进行中，使用主目录）
     violations_dir = os.path.join(DATA_DIR, str(exam_id), "violations")
     if not os.path.exists(violations_dir):
         os.makedirs(violations_dir)
@@ -524,15 +593,16 @@ def report_violation():
 
 @app.route('/<int:exam_id>/screenshots/<filename>')
 def serve_screenshot(exam_id, filename):
-    """提供截图文件（兼容旧格式）"""
+    """提供截图文件（兼容旧格式，支持主备目录）"""
     try:
         # 验证考试是否存在
         exam = current_app.data_access.get_exam(exam_id)
         if not exam:
             return jsonify({"status": "error", "message": "考试不存在"}), 404
 
-        # 构建截图文件目录路径
-        screenshots_path = os.path.join(DATA_DIR, str(exam_id), "screenshots")
+        # 获取考试数据目录（支持主备目录）
+        exam_dir = get_exam_data_dir(exam_id)
+        screenshots_path = os.path.join(exam_dir, "screenshots")
 
         # 检查目录是否存在
         if not os.path.exists(screenshots_path):
@@ -550,15 +620,16 @@ def serve_screenshot(exam_id, filename):
 
 @app.route('/<int:exam_id>/screenshots/<student_id>/<filename>')
 def serve_student_screenshot(exam_id, student_id, filename):
-    """提供学生专用目录的截图文件"""
+    """提供学生专用目录的截图文件（支持主备目录）"""
     try:
         # 验证考试是否存在
         exam = current_app.data_access.get_exam(exam_id)
         if not exam:
             return jsonify({"status": "error", "message": "考试不存在"}), 404
 
-        # 构建学生截图文件目录路径
-        student_screenshots_path = os.path.join(DATA_DIR, str(exam_id), "screenshots", str(student_id))
+        # 获取考试数据目录（支持主备目录）
+        exam_dir = get_exam_data_dir(exam_id)
+        student_screenshots_path = os.path.join(exam_dir, "screenshots", str(student_id))
 
         # 检查目录是否存在
         if not os.path.exists(student_screenshots_path):
@@ -577,15 +648,16 @@ def serve_student_screenshot(exam_id, student_id, filename):
 
 @app.route('/<int:exam_id>/violations/<filename>')
 def serve_violation_screenshot(exam_id, filename):
-    """提供违规截图文件"""
+    """提供违规截图文件（支持主备目录）"""
     try:
         # 验证考试是否存在
         exam = current_app.data_access.get_exam(exam_id)
         if not exam:
             return jsonify({"status": "error", "message": "考试不存在"}), 404
 
-        # 构建违规截图文件目录路径
-        violations_path = os.path.join(DATA_DIR, str(exam_id), "violations")
+        # 获取考试数据目录（支持主备目录）
+        exam_dir = get_exam_data_dir(exam_id)
+        violations_path = os.path.join(exam_dir, "violations")
 
         # 检查目录是否存在
         if not os.path.exists(violations_path):
@@ -811,14 +883,15 @@ def delete_student_from_exam(exam_id, student_id):
         # 删除数据库和Redis中的学生数据
         affected = current_app.data_access.delete_student(exam_id, student_id)
 
-        # 删除学生的录屏文件
-        recording_dir = os.path.join(DATA_DIR, str(exam_id), "recordings", str(student_id))
+        # 删除学生的录屏文件（需要检查主备两个目录）
+        exam_dir = get_exam_data_dir(exam_id)
+        recording_dir = os.path.join(exam_dir, "recordings", str(student_id))
         if os.path.exists(recording_dir):
             shutil.rmtree(recording_dir)
             print(f"已删除录屏目录: {recording_dir}")
 
-        # 删除学生的截图文件
-        screenshot_dir = os.path.join(DATA_DIR, str(exam_id), "screenshots", str(student_id))
+        # 删除学生的截图文件（需要检查主备两个目录）
+        screenshot_dir = os.path.join(exam_dir, "screenshots", str(student_id))
         if os.path.exists(screenshot_dir):
             shutil.rmtree(screenshot_dir)
             print(f"已删除截图目录: {screenshot_dir}")
@@ -940,8 +1013,29 @@ def manage_exam(exam_id):
 
                 # 更新考试信息
                 success = current_app.data_access.update_exam(exam_id, update_data)
-                
+
                 if success:
+                    # 检查end_time是否变更(考试正在进行中时)
+                    if exam['status'] == 'active' and str(exam['end_time']) != str(end_time):
+                        # 设置Redis标记,通知所有在线学生
+                        # 标记值直接存储ISO格式的新end_time,30分钟后自动过期
+                        end_time_changed_key = f'exam:{exam_id}:end_time_changed'
+                        r = current_app.data_access._get_redis()
+
+                        # 将end_time转换为ISO格式
+                        try:
+                            from datetime import datetime
+                            if isinstance(end_time, str):
+                                dt = datetime.strptime(end_time, "%Y-%m-%d %H:%M:%S")
+                            else:
+                                dt = end_time
+                            iso_time = dt.isoformat()
+                        except:
+                            iso_time = str(end_time)
+
+                        r.setex(end_time_changed_key, 1800, iso_time)
+                        print(f"[考试更新] 考试 {exam_id} 结束时间变更: {exam['end_time']} -> {end_time}, 已设置Redis标记(30分钟过期)")
+
                     return jsonify({
                         "status": "success",
                         "message": "考试信息更新成功"
@@ -1012,24 +1106,25 @@ def upload_screenshot():
 
 @app.route('/api/exams/<int:exam_id>/students/<student_id>/screenshots')
 def get_student_screenshots(exam_id, student_id):
-    """获取指定考生的截图文件URL，支持分页（直接从文件系统读取）"""
+    """获取指定考生的截图文件URL，支持分页（直接从文件系统读取，支持主备目录）"""
     # 获取分页参数
     page = request.args.get('page', 1, type=int)
     per_page = request.args.get('per_page', 20, type=int)
-    
-    # 直接从文件系统获取截图列表
-    student_screenshot_dir = os.path.join(DATA_DIR, str(exam_id), "screenshots", str(student_id))
-    
+
+    # 获取考试数据目录（支持主备目录）
+    exam_dir = get_exam_data_dir(exam_id)
+    student_screenshot_dir = os.path.join(exam_dir, "screenshots", str(student_id))
+
     if not os.path.exists(student_screenshot_dir):
         return jsonify({"screenshots": []})
-    
+
     try:
         # 获取所有PNG文件
-        files = [f for f in os.listdir(student_screenshot_dir) 
+        files = [f for f in os.listdir(student_screenshot_dir)
                 if f.lower().endswith('.png') and f.startswith('screenshot_')]
         # 按时间戳倒序排序
         files.sort(reverse=True)
-        
+
         # 计算分页范围
         start = (page - 1) * per_page
         end = start + per_page
@@ -1053,18 +1148,18 @@ def get_student_logins(exam_id, student_id):
 # 统一录屏文件API
 @app.route('/api/exams/<int:exam_id>/students/<student_id>/recordings')
 def get_student_recordings(exam_id, student_id):
-    """获取指定考生的所有录屏文件（片段和合并后的）"""
-    # 创建考试专用的录屏目录路径
-    exam_recordings_dir = os.path.join(DATA_DIR, str(exam_id), "recordings")
+    """获取指定考生的所有录屏文件（片段和合并后的，支持主备目录）"""
+    # 获取考试数据目录（支持主备目录）
+    exam_dir = get_exam_data_dir(exam_id)
+    exam_recordings_dir = os.path.join(exam_dir, "recordings")
 
     if not os.path.exists(exam_recordings_dir):
         return jsonify({"recordings": []})
 
     recordings = []
 
-
     # 获取学生姓名
-    student_name = current_app.data_access.get_student_username(exam_id, student_id) # Changed to current_app.data_access
+    student_name = current_app.data_access.get_student_username(exam_id, student_id)
     if not student_name:
         student_name = str(student_id)
 
@@ -1094,7 +1189,7 @@ def get_student_recordings(exam_id, student_id):
         if os.path.isdir(file_path):
             continue
 
-        # 检查是否是合并后的录屏: {student_name}_{exam_id}_*.mp4
+        # 检查是否是合并后的录屏: {student_id}_*.mp4
         if filename.startswith(f"{student_id}_") and filename.endswith(('.mp4', '.webm', '.avi')):
             file_size = os.path.getsize(file_path)
             file_time = datetime.fromtimestamp(os.path.getmtime(file_path))
@@ -1105,7 +1200,7 @@ def get_student_recordings(exam_id, student_id):
                 'created_time': file_time.isoformat(),
                 'download_url': f"/recordings/{exam_id}/{filename}"
             })
-    
+
     # 按创建时间倒序排序
     recordings.sort(key=lambda x: x['created_time'], reverse=True)
     return jsonify({"recordings": recordings})
@@ -1116,13 +1211,34 @@ def download_chromedriver(filename):
     """下载chromedriver可执行文件"""
     # 假设所有chromedriver文件都放在 DATA_DIR/chromedrivers 目录下
     chromedriver_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'chromedrivers')
-    #chromedriver_dir = os.path.join('/var/ftp/pub/upload','chromedrivers')
     file_path = os.path.join(chromedriver_dir, filename)
-    print(file_path)
+    print(f"Checking for ChromeDriver: {file_path}")
+    
     if not os.path.exists(file_path):
-        return jsonify({"status": "error", "message": f"未找到{filename}"}), 404
+        print(f"File {filename} not found, attempting to auto-download...")
+        # 尝试从文件名解析版本号，格式如: chromedriver_143.exe 或 chromedriver_143
+        # 只需要提取数字部分
+        import re
+        match = re.search(r'chromedriver_(\d+)', filename)
+        if match:
+            major_version = match.group(1)
+            platform = "win64" if filename.endswith(".exe") else "linux64"
+            print(f"Detected version {major_version} and platform {platform} from filename.")
+            
+            try:
+                # 调用自动下载函数
+                success = auto_download_chromedriver(major_version, target_dir=chromedriver_dir, platform_override=platform)
+                if not success or not os.path.exists(file_path):
+                    return jsonify({"status": "error", "message": f"自动下载失败: {filename}"}), 404
+                print(f"Auto-download successful: {file_path}")
+            except Exception as e:
+                print(f"Error during auto-download: {e}")
+                return jsonify({"status": "error", "message": f"下载过程中出错: {str(e)}"}), 500
+        else:
+            return jsonify({"status": "error", "message": f"未找到{filename}且无法解析版本号"}), 404
+            
     # 设置Content-Disposition，建议保存为chromedriver.exe
-    print("send")
+    print(f"Sending file: {file_path}")
     return send_file(file_path, as_attachment=True, download_name='chromedriver.exe')
 
 @app.route('/api/server_time')
@@ -1243,7 +1359,7 @@ def upload_screen_recording():
 
 @app.route('/recordings/<int:exam_id>/<filename>')
 def serve_recording(exam_id, filename):
-    """提供录屏文件下载 - 支持多种视频格式"""
+    """提供录屏文件下载 - 支持多种视频格式（支持主备目录）"""
     try:
         # 验证考试是否存在
         exam = current_app.data_access.get_exam(exam_id)
@@ -1264,8 +1380,9 @@ def serve_recording(exam_id, filename):
         else:
             mimetype = 'video/mp4'  # 默认
 
-        # 构建录屏文件目录路径
-        recording_dir = os.path.join(DATA_DIR, str(exam_id), "recordings")
+        # 获取考试数据目录（支持主备目录）
+        exam_dir = get_exam_data_dir(exam_id)
+        recording_dir = os.path.join(exam_dir, "recordings")
 
         # 检查目录是否存在
         if not os.path.exists(recording_dir):
@@ -1284,7 +1401,7 @@ def serve_recording(exam_id, filename):
 
 @app.route('/recordings/<int:exam_id>/<student_id>/<filename>')
 def serve_student_recording(exam_id, student_id, filename):
-    """提供学生专用目录中的录屏文件"""
+    """提供学生专用目录中的录屏文件（支持主备目录）"""
     try:
         # 验证考试是否存在
         exam = current_app.data_access.get_exam(exam_id)
@@ -1305,8 +1422,9 @@ def serve_student_recording(exam_id, student_id, filename):
         else:
             mimetype = 'video/mp4'  # 默认
 
-        # 构建学生录屏文件目录路径
-        student_recording_dir = os.path.join(DATA_DIR, str(exam_id), "recordings", str(student_id))
+        # 获取考试数据目录（支持主备目录）
+        exam_dir = get_exam_data_dir(exam_id)
+        student_recording_dir = os.path.join(exam_dir, "recordings", str(student_id))
 
         # 检查目录是否存在
         if not os.path.exists(student_recording_dir):
@@ -1327,6 +1445,11 @@ def serve_student_recording(exam_id, student_id, filename):
 def import_students_to_exam(exam_id, students):
     """将学生列表导入到指定考试，返回导入人数。students为json列表，每个元素包含student_id和student_name"""
     imported_count = 0
+
+    # 预先获取现有学生列表，避免循环中重复查询
+    existing_students = current_app.data_access.get_exam_students(exam_id)
+    existing_student_ids = {s['student_id'] for s in existing_students}
+
     for stu in students:
         student_id = stu.get('student_id')
         student_name = stu.get('student_name')
@@ -1334,18 +1457,19 @@ def import_students_to_exam(exam_id, students):
         # 如果没有提供学号，自动生成
         if not student_id:
             # 生成格式：exam_id + 序号，例如：4001, 4002, 4003...
-            existing_students = current_app.data_access.get_exam_students(exam_id)
-            next_number = len(existing_students) + 1
+            next_number = len(existing_students) + imported_count + 1
             student_id = f"{exam_id}{next_number:03d}"  # 例如：4001, 4002
 
             # 确保生成的学号不重复
-            while current_app.data_access.get_student_exam(student_id, exam_id):
+            while student_id in existing_student_ids:
                 next_number += 1
                 student_id = f"{exam_id}{next_number:03d}"
 
-        # 检查是否已存在
-        exists = current_app.data_access.get_student_exam(student_id, exam_id)
-        if exists:
+            # 添加到已存在列表，避免后续学生生成重复学号
+            existing_student_ids.add(student_id)
+
+        # 检查是否已存在（使用内存中的集合而非数据库查询）
+        if student_id in existing_student_ids:
             print(f"学生 {student_id} 已存在于考试 {exam_id} 中，跳过")
             continue
 
@@ -1356,16 +1480,18 @@ def import_students_to_exam(exam_id, students):
             'status': 'pending'
         }
         current_app.data_access.add_student(student_data)
+        existing_student_ids.add(student_id)  # 添加到集合
         imported_count += 1
         print(f"成功导入学生: {student_name} (ID: {student_id})")
 
     return imported_count
 
 def get_student_screenshot_count(exam_id, student_id):
-    """获取学生的截图文件数量（仅本地）"""
+    """获取学生的截图文件数量（支持主备目录）"""
     try:
-        # 检查学生专用截图目录
-        student_screenshot_dir = os.path.join(DATA_DIR, str(exam_id), "screenshots", str(student_id))
+        # 获取考试数据目录（支持主备目录）
+        exam_dir = get_exam_data_dir(exam_id)
+        student_screenshot_dir = os.path.join(exam_dir, "screenshots", str(student_id))
         count = 0
 
         if os.path.exists(student_screenshot_dir):
@@ -1379,19 +1505,22 @@ def get_student_screenshot_count(exam_id, student_id):
         return 0
 
 def get_student_recording_count(exam_id, student_id):
-    """获取学生的录屏文件数量（仅本地，临时禁用远程查询以排查性能问题）"""
+    """获取学生的录屏文件数量（支持主备目录）"""
     try:
         count = 0
 
+        # 获取考试数据目录（支持主备目录）
+        exam_dir = get_exam_data_dir(exam_id)
+
         # 1. 检查学生专用录屏目录中的片段
-        student_recordings_dir = os.path.join(DATA_DIR, str(exam_id), "recordings", str(student_id))
+        student_recordings_dir = os.path.join(exam_dir, "recordings", str(student_id))
         if os.path.exists(student_recordings_dir):
             files = os.listdir(student_recordings_dir)
             # 计算视频文件
             count += len([f for f in files if f.lower().endswith(('.mp4', '.webm', '.avi', '.mov', '.mkv'))])
 
         # 2. 检查主录屏目录中的合并文件
-        main_recordings_dir = os.path.join(DATA_DIR, str(exam_id), "recordings")
+        main_recordings_dir = os.path.join(exam_dir, "recordings")
         if os.path.exists(main_recordings_dir):
             files = os.listdir(main_recordings_dir)
             # 查找以该学生ID开头的合并文件

@@ -4,7 +4,7 @@ import pymysql
 from datetime import datetime
 
 DB_CONFIG = {
-    'host': '10.188.2.252',
+    'host': '127.0.0.1',
     'port': 3306,
     'user': 'debian-sys-maint',
     'password': 'bGEtT3EfFKGLhYRS',

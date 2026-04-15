@@ -2,17 +2,18 @@
     "allowed_apps": [
         {"exe": "chrome.exe", "name": "谷歌浏览器"},
         {"exe1": "msedge1.exe", "name": "Edge浏览器"},
-        {"exe1": "notepad.exe", "name": "记事本"},
+        {"exe": "notepad.exe", "name": "记事本"},
         {"exe": "calc.exe", "name": "计算器"},
         {"exe": "devcpp.exe", "name": "Dev-C++"},
         {"exe1": "cursor.exe", "name": "Cursor"},
         {"exe": "mspaint.exe", "name": "画图"},
-        {"exe": "evcapture.exe", "name": "录屏"},
+        {"exe1": "evcapture.exe", "name": "录屏"},
         {"exe": "ConsolePauser.exe", "name": "ConsolePauser"},
         {"exe": "code.exe", "name": "vscode"},
         {"exe": "putty.exe", "name": "putty"},
         {"exe": "Octopus.exe", "name": "八爪鱼"},
-        {"exe": "excel.exe", "name": "excel"}
+        {"exe": "excel.exe", "name": "excel"},
+        {"exe": "devenv.exe", "name": "Visual Studio"}
 
     ],
     "allowed_executables": [
@@ -77,6 +78,6 @@
         "password": "bGEtT3EfFKGLhYRS",
         "database": "monitoring"
     },
-    "data_dir1": "/data/supervise/server_data",
-    "data_dir": "/home/zq/project/supervise/server/server_data"
+    "data_dir": "/home/zq/project/supervise/server/server_data",
+    "backup_data_dir": "/data/supervise/server_data"
 }

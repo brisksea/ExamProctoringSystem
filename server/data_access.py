@@ -487,16 +487,26 @@ class DataAccess:
     def get_exam_students(self, exam_id):
         with self.with_connection() as conn:
             with conn.cursor(dictionary=True) as cursor:
-                # 获取学生基本信息，并关联最新的IP地址
+                # 优化：使用LEFT JOIN代替子查询，避免N+1查询问题
+                # 先找出每个学生最新的登录历史ID，然后关联获取IP
                 sql = """
                 SELECT es.*,
-                       (SELECT slh.ip
-                        FROM student_login_history slh
-                        WHERE slh.student_exam_id = es.id
-                          AND slh.ip IS NOT NULL
-                        ORDER BY slh.timestamp DESC
-                        LIMIT 1) as ip
+                       slh_latest.ip
                 FROM exam_students es
+                LEFT JOIN (
+                    SELECT slh1.student_exam_id,
+                           slh1.ip,
+                           slh1.timestamp
+                    FROM student_login_history slh1
+                    INNER JOIN (
+                        SELECT student_exam_id, MAX(timestamp) as max_timestamp
+                        FROM student_login_history
+                        WHERE ip IS NOT NULL
+                        GROUP BY student_exam_id
+                    ) slh2 ON slh1.student_exam_id = slh2.student_exam_id
+                          AND slh1.timestamp = slh2.max_timestamp
+                    WHERE slh1.ip IS NOT NULL
+                ) slh_latest ON es.id = slh_latest.student_exam_id
                 WHERE es.exam_id = %s
                 """
                 cursor.execute(sql, (exam_id,))
