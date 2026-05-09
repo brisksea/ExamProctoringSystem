@@ -19,13 +19,11 @@ class DataAccess:
               config = json.load(f)
           mysql_conf = config.get('mysql', {})
 
-          # 优化连接池配置（500人并发优化）
+          # 每个进程独立连接池，pool_size=5：8 workers × 5 = 40 连接，远低于 max_connections=350
           self.pool_config = {
-              'pool_name': f'exam_monitor_pool_{os.getpid()}',  # 每个进程独立的池名
-              'pool_size': 10,  # 增加到 20 以支持 500 人并发
-                                # 总连接数: 8 workers × 20 = 160 MySQL 连接
-                                # 需要确保 MySQL max_connections >= 200
-              'pool_reset_session': True,
+              'pool_name': f'exam_monitor_pool_{os.getpid()}',
+              'pool_size': 5,
+              'pool_reset_session': False,
               'host': mysql_conf.get('host', 'localhost'),
               'port': mysql_conf.get('port', 3306),
               'user': mysql_conf.get('user', 'debian-sys-maint'),

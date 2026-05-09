@@ -20,7 +20,6 @@ from datetime import datetime, timedelta
 from flask import Flask, request, render_template, jsonify, send_from_directory, send_file, current_app
 from flask_cors import CORS
 from data_access import DataAccess
-from celery_tasks import merge_videos_task
 from download_chromedriver import download_chromedriver as auto_download_chromedriver
 
 # 配置文件路径
@@ -514,15 +513,16 @@ def student_logout():
             has_local_videos = len(files) > 0
 
         if has_local_videos:
-            # 本地有视频片段，提交到 Celery 任务队列进行合并
+            # 本地有视频片段，在后台线程中合并
             student_name = data.get('username', f"student_{student_id}")
-            merge_videos_task.delay(
-                exam_id=exam_id,
-                student_id=student_id,
-                student_name=student_name,
-                data_dir=DATA_DIR
-            )
-            print(f"本地有 {len(files)} 个视频片段，已提交 Celery 合并任务: exam_id={exam_id}, student_id={student_id}")
+            import threading
+            from video_merger import merge_student_videos
+            threading.Thread(
+                target=merge_student_videos,
+                args=(exam_id, student_id, student_name, DATA_DIR),
+                daemon=True
+            ).start()
+            print(f"本地有 {len(files)} 个视频片段，已提交合并任务: exam_id={exam_id}, student_id={student_id}")
         else:
             # 本地无视频片段，转发退出请求到远程服务器
             print(f"本地无视频片段，转发退出请求到远程服务器: student_id={student_id}")
@@ -694,6 +694,7 @@ def get_config():
 def manage_exams():
     """考试管理"""
     if request.method == 'GET':
+        current_app.data_access.refresh_exam_status()
         return jsonify(current_app.data_access.get_all_exams())
 
     if request.method == 'POST':
@@ -774,6 +775,16 @@ def manage_exams():
             imported_count = 0
             if students:
                 imported_count = import_students_to_exam(exam_id, students)
+
+            # 通知调度服务有新考试
+            try:
+                r = current_app.data_access._get_redis()
+                r.publish('exam:schedule_changes', json.dumps({
+                    'action': 'create', 'exam_id': exam_id,
+                    'start_time': start_time, 'end_time': end_time
+                }))
+            except Exception as e:
+                print(f"[调度通知] 发布失败: {e}")
 
             exam_dir = os.path.join(DATA_DIR, str(exam_id))
             if not os.path.exists(exam_dir):
@@ -1015,6 +1026,16 @@ def manage_exam(exam_id):
                 success = current_app.data_access.update_exam(exam_id, update_data)
 
                 if success:
+                    # 通知调度服务考试已更新
+                    try:
+                        r = current_app.data_access._get_redis()
+                        r.publish('exam:schedule_changes', json.dumps({
+                            'action': 'update', 'exam_id': exam_id,
+                            'start_time': start_time, 'end_time': end_time
+                        }))
+                    except Exception as e:
+                        print(f"[调度通知] 发布失败: {e}")
+
                     # 检查end_time是否变更(考试正在进行中时)
                     if exam['status'] == 'active' and str(exam['end_time']) != str(end_time):
                         # 设置Redis标记,通知所有在线学生
@@ -1067,6 +1088,13 @@ def manage_exam(exam_id):
 
             # 删除考试相关的违规记录
             current_app.data_access.delete_violations_by_exam(exam_id)
+
+            # 通知调度服务移除该考试的任务
+            try:
+                r = current_app.data_access._get_redis()
+                r.publish('exam:schedule_changes', json.dumps({'action': 'delete', 'exam_id': exam_id}))
+            except Exception as e:
+                print(f"[调度通知] 发布失败: {e}")
 
             print(f"考试已删除: ID={exam_id}, 名称={exam['name'] if exam else '未知'}")
             return jsonify({"status": "success", "message": "考试已成功删除"})

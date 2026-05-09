@@ -8,9 +8,7 @@ cd "$SCRIPT_DIR"
 
 # PID文件和日志
 GUNICORN_PIDFILE="$SCRIPT_DIR/logs/gunicorn.pid"
-CELERY_STATUS_WORKER_PIDFILE="$SCRIPT_DIR/logs/celery_worker_status.pid"
-CELERY_MERGE_WORKER_PIDFILE="$SCRIPT_DIR/logs/celery_worker_merge.pid"
-CELERY_BEAT_PIDFILE="$SCRIPT_DIR/logs/celery_beat.pid"
+SCHEDULER_PIDFILE="$SCRIPT_DIR/logs/exam_scheduler.pid"
 
 mkdir -p "$SCRIPT_DIR/logs"
 
@@ -35,19 +33,16 @@ start_gunicorn() {
 }
 
 stop_gunicorn() {
-    # 先尝试优雅关闭主进程（会自动关闭所有worker）
     if [ -f "$GUNICORN_PIDFILE" ]; then
         PID=$(cat "$GUNICORN_PIDFILE")
         if ps -p "$PID" > /dev/null 2>&1; then
             kill -TERM "$PID" 2>/dev/null
-            # 等待优雅关闭
             for i in {1..10}; do
                 if ! ps -p "$PID" > /dev/null 2>&1; then
                     break
                 fi
                 sleep 1
             done
-            # 如果还活着，强制杀掉
             if ps -p "$PID" > /dev/null 2>&1; then
                 kill -9 "$PID" 2>/dev/null
                 sleep 1
@@ -56,14 +51,10 @@ stop_gunicorn() {
         rm -f "$GUNICORN_PIDFILE"
     fi
 
-    # 清理所有可能残留的 gunicorn 进程
-    # 使用 exam_monitor 进程名来匹配，因为 worker 进程的 cmdline 会被改写
     pkill -9 -f "gunicorn.*exam_monitor" 2>/dev/null
-    # 也尝试匹配原始启动命令
     pkill -9 -f "gunicorn.*server:app" 2>/dev/null
     sleep 1
 
-    # 再次确认清理完毕
     if pgrep -f "gunicorn.*exam_monitor" > /dev/null 2>&1; then
         echo "⚠ 警告: 仍有 gunicorn 进程残留"
         pgrep -af "gunicorn.*exam_monitor"
@@ -72,165 +63,59 @@ stop_gunicorn() {
     echo "✓ Gunicorn 已停止"
 }
 
-start_celery_worker() {
-    # 启动状态检测 Worker
-    if [ -f "$CELERY_STATUS_WORKER_PIDFILE" ] && ps -p $(cat "$CELERY_STATUS_WORKER_PIDFILE") > /dev/null 2>&1; then
-        echo "Celery Worker (状态检测) 已在运行"
-    else
-        rm -f "$CELERY_STATUS_WORKER_PIDFILE"
-        echo "启动 Celery Worker (状态检测队列)..."
-        celery -A celery_config.celery_app worker --loglevel=info \
-            --queues=status_check \
-            --concurrency=1 \
-            --max-tasks-per-child=1000 \
-            --hostname=worker_status@%h \
-            --pidfile="$CELERY_STATUS_WORKER_PIDFILE" \
-            --logfile="$SCRIPT_DIR/logs/celery_worker_status.log" \
-            --detach
-        sleep 2
-        if [ -f "$CELERY_STATUS_WORKER_PIDFILE" ] && ps -p $(cat "$CELERY_STATUS_WORKER_PIDFILE") > /dev/null 2>&1; then
-            echo "✓ Celery Worker (状态检测) 启动成功"
-        else
-            echo "✗ Celery Worker (状态检测) 启动失败"
-            return 1
-        fi
-    fi
-
-    # 启动视频合并 Worker
-    if [ -f "$CELERY_MERGE_WORKER_PIDFILE" ] && ps -p $(cat "$CELERY_MERGE_WORKER_PIDFILE") > /dev/null 2>&1; then
-        echo "Celery Worker (视频合并) 已在运行"
-    else
-        rm -f "$CELERY_MERGE_WORKER_PIDFILE"
-        echo "启动 Celery Worker (视频合并队列)..."
-        celery -A celery_config.celery_app worker --loglevel=info \
-            --queues=video_merge \
-            --concurrency=2 \
-            --max-tasks-per-child=50 \
-            --hostname=worker_merge@%h \
-            --pidfile="$CELERY_MERGE_WORKER_PIDFILE" \
-            --logfile="$SCRIPT_DIR/logs/celery_worker_merge.log" \
-            --detach
-        sleep 2
-        if [ -f "$CELERY_MERGE_WORKER_PIDFILE" ] && ps -p $(cat "$CELERY_MERGE_WORKER_PIDFILE") > /dev/null 2>&1; then
-            echo "✓ Celery Worker (视频合并) 启动成功"
-        else
-            echo "✗ Celery Worker (视频合并) 启动失败"
-            return 1
-        fi
-    fi
-}
-
-stop_celery_worker() {
-    # 停止状态检测 Worker
-    if [ -f "$CELERY_STATUS_WORKER_PIDFILE" ]; then
-        PID=$(cat "$CELERY_STATUS_WORKER_PIDFILE")
-        if ps -p "$PID" > /dev/null 2>&1; then
-            kill -TERM "$PID" 2>/dev/null
-            for i in {1..15}; do
-                if ! ps -p "$PID" > /dev/null 2>&1; then
-                    break
-                fi
-                sleep 1
-            done
-            if ps -p "$PID" > /dev/null 2>&1; then
-                kill -9 "$PID" 2>/dev/null
-                sleep 1
-            fi
-        fi
-        rm -f "$CELERY_STATUS_WORKER_PIDFILE"
-    fi
-
-    # 停止视频合并 Worker
-    if [ -f "$CELERY_MERGE_WORKER_PIDFILE" ]; then
-        PID=$(cat "$CELERY_MERGE_WORKER_PIDFILE")
-        if ps -p "$PID" > /dev/null 2>&1; then
-            kill -TERM "$PID" 2>/dev/null
-            for i in {1..15}; do
-                if ! ps -p "$PID" > /dev/null 2>&1; then
-                    break
-                fi
-                sleep 1
-            done
-            if ps -p "$PID" > /dev/null 2>&1; then
-                kill -9 "$PID" 2>/dev/null
-                sleep 1
-            fi
-        fi
-        rm -f "$CELERY_MERGE_WORKER_PIDFILE"
-    fi
-
-    # 清理残留的 celery worker 进程
-    pkill -9 -f "celeryd.*celery_config" 2>/dev/null
-    sleep 1
-
-    echo "✓ Celery Workers 已停止"
-}
-
-start_celery_beat() {
-    if [ -f "$CELERY_BEAT_PIDFILE" ] && ps -p $(cat "$CELERY_BEAT_PIDFILE") > /dev/null 2>&1; then
-        echo "Celery Beat 已在运行"
+start_scheduler() {
+    if [ -f "$SCHEDULER_PIDFILE" ] && ps -p $(cat "$SCHEDULER_PIDFILE") > /dev/null 2>&1; then
+        echo "考试调度服务已在运行"
         return 0
     fi
-    rm -f "$CELERY_BEAT_PIDFILE"
+    rm -f "$SCHEDULER_PIDFILE"
 
-    echo "启动 Celery Beat..."
-    celery -A celery_config.celery_app beat --loglevel=info \
-        --pidfile="$CELERY_BEAT_PIDFILE" \
-        --logfile="$SCRIPT_DIR/logs/celery_beat.log" \
-        --detach
+    echo "启动考试调度服务..."
+    python "$SCRIPT_DIR/exam_scheduler.py" >> "$SCRIPT_DIR/logs/exam_scheduler.log" 2>&1 &
+    SCHEDULER_PID=$!
+    echo $SCHEDULER_PID > "$SCHEDULER_PIDFILE"
     sleep 2
 
-    if [ -f "$CELERY_BEAT_PIDFILE" ] && ps -p $(cat "$CELERY_BEAT_PIDFILE") > /dev/null 2>&1; then
-        echo "✓ Celery Beat 启动成功"
+    if ps -p "$SCHEDULER_PID" > /dev/null 2>&1; then
+        echo "✓ 考试调度服务启动成功 (PID: $SCHEDULER_PID)"
     else
-        echo "✗ Celery Beat 启动失败"
+        echo "✗ 考试调度服务启动失败，请检查 logs/exam_scheduler.log"
+        rm -f "$SCHEDULER_PIDFILE"
         return 1
     fi
 }
 
-stop_celery_beat() {
-    # 先尝试优雅关闭主进程
-    if [ -f "$CELERY_BEAT_PIDFILE" ]; then
-        PID=$(cat "$CELERY_BEAT_PIDFILE")
+stop_scheduler() {
+    if [ -f "$SCHEDULER_PIDFILE" ]; then
+        PID=$(cat "$SCHEDULER_PIDFILE")
         if ps -p "$PID" > /dev/null 2>&1; then
             kill -TERM "$PID" 2>/dev/null
-            # 等待优雅关闭
             for i in {1..10}; do
                 if ! ps -p "$PID" > /dev/null 2>&1; then
                     break
                 fi
                 sleep 1
             done
-            # 如果还活着，强制杀掉
             if ps -p "$PID" > /dev/null 2>&1; then
                 kill -9 "$PID" 2>/dev/null
                 sleep 1
             fi
         fi
-        rm -f "$CELERY_BEAT_PIDFILE"
+        rm -f "$SCHEDULER_PIDFILE"
     fi
 
-    # 清理所有可能残留的 celery beat 进程
-    pkill -9 -f "celery.*beat" 2>/dev/null
+    pkill -9 -f "exam_scheduler.py" 2>/dev/null
     sleep 1
 
-    # 再次确认清理完毕
-    if pgrep -f "celery.*beat" > /dev/null 2>&1; then
-        echo "⚠ 警告: 仍有 celery beat 进程残留"
-        pgrep -af "celery.*beat"
-    fi
-
-    echo "✓ Celery Beat 已停止"
+    echo "✓ 考试调度服务已停止"
 }
 
 show_status() {
     echo "========== 服务状态 =========="
-    for name in Gunicorn "Celery Worker (状态检测)" "Celery Worker (视频合并)" "Celery Beat"; do
+    for name in Gunicorn "考试调度服务"; do
         case "$name" in
             Gunicorn) pidfile="$GUNICORN_PIDFILE" ;;
-            "Celery Worker (状态检测)") pidfile="$CELERY_STATUS_WORKER_PIDFILE" ;;
-            "Celery Worker (视频合并)") pidfile="$CELERY_MERGE_WORKER_PIDFILE" ;;
-            "Celery Beat") pidfile="$CELERY_BEAT_PIDFILE" ;;
+            "考试调度服务") pidfile="$SCHEDULER_PIDFILE" ;;
         esac
         if [ -f "$pidfile" ] && ps -p $(cat "$pidfile") > /dev/null 2>&1; then
             echo "$name: 运行中 (PID: $(cat $pidfile))"
@@ -244,24 +129,20 @@ case "$1" in
     start)
         echo "========== 启动服务 =========="
         start_gunicorn
-        start_celery_worker
-        start_celery_beat
+        start_scheduler
         ;;
     stop)
         echo "========== 停止服务 =========="
-        stop_celery_beat
-        stop_celery_worker
+        stop_scheduler
         stop_gunicorn
         ;;
     restart)
         echo "========== 重启服务 =========="
-        stop_celery_beat
-        stop_celery_worker
+        stop_scheduler
         stop_gunicorn
         sleep 1
         start_gunicorn
-        start_celery_worker
-        start_celery_beat
+        start_scheduler
         ;;
     status)
         show_status

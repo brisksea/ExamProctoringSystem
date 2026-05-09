@@ -51,7 +51,6 @@ def status_check_task(self):
             return {"status": "error", "message": str(e)}
 
         status_changes = {
-            "exam_status_updated": 0,
             "students_offline": 0
         }
 
@@ -73,7 +72,7 @@ def status_check_task(self):
                 elif not isinstance(end_time, datetime):
                     raise ValueError(f"Unsupported end_time type: {type(end_time)}")
 
-                # 更新考试状态
+                # 根据当前时间计算考试状态（不写DB，由请求触发按需刷新）
                 if now < start_time:
                     new_status = 'pending'
                 elif start_time <= now <= end_time:
@@ -81,16 +80,11 @@ def status_check_task(self):
                 else:
                     new_status = 'completed'
 
-                # 如果状态发生变化，更新考试状态
-                if exam['status'] != new_status:
-                    data_access.update_exam_status(exam_id, new_status)
-                    logger.info(f"[状态检测] 考试状态更新: {exam['name']} (ID: {exam_id}) {exam['status']} -> {new_status}")
-                    status_changes["exam_status_updated"] += 1
-
                 # 处理已结束的考试
                 if new_status == 'completed':
-                    # 考试刚结束时(状态刚从active变为completed)，自动登出所有online学生
-                    if exam['status'] == 'active':
+                    # 考试结束后90秒内自动登出所有online学生（防止任务延迟导致错过窗口）
+                    time_since_end = (now - end_time).total_seconds()
+                    if time_since_end <= 90:
                         students = data_access.get_exam_students(exam_id)
                         for student in students:
                             if student['status'] == 'online':
@@ -102,7 +96,6 @@ def status_check_task(self):
                                 status_changes["students_auto_logout"] = status_changes.get("students_auto_logout", 0) + 1
 
                     # 考试结束30分钟后自动合并视频
-                    time_since_end = (now - end_time).total_seconds()
                     if 1800 <= time_since_end <= 7200:  # 30分钟~2小时内检查（避免反复触发）
                         # 获取所有学生（不论状态），检查是否有未合并的录屏
                         students = data_access.get_exam_students(exam_id)
