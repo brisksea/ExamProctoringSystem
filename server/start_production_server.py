@@ -38,7 +38,6 @@ def start_production_server():
             "--worker-connections", "2000",
             "--max-requests", "1000",
             "--max-requests-jitter", "100",
-            "--preload",
             "server:app"
         ]
         

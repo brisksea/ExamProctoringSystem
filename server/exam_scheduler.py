@@ -42,6 +42,21 @@ data_access = DataAccess()
 
 # ========== APScheduler 任务函数 ==========
 
+LOCK_PREFIX = 'exam:offline_lock:'
+LOCK_TIMEOUT = 30
+
+def _acquire_lock(student_id, exam_id):
+    """尝试获取 Redis 分布式锁，防止重复掉线检测"""
+    try:
+        r = data_access._get_redis()
+        if not r:
+            return True
+        lock_key = f'{LOCK_PREFIX}{exam_id}:{student_id}'
+        return r.set(lock_key, 1, nx=True, ex=LOCK_TIMEOUT)
+    except Exception:
+        return True
+
+
 def check_offline_students(exam_id):
     """检测超过60秒未发心跳的学生，标记为离线"""
     try:
@@ -57,6 +72,10 @@ def check_offline_students(exam_id):
             student = students_dict.get(student_id)
             if not student or student['status'] == 'logout':
                 continue
+
+            if not _acquire_lock(student_id, exam_id):
+                continue
+
             rt = data_access.get_student_realtime_status(exam_id, student_id)
             current_status = rt.get('status') or student['status']
             if current_status != 'online':

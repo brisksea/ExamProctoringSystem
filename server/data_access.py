@@ -3,6 +3,7 @@ from datetime import datetime
 import os
 import json
 import threading
+from werkzeug.security import generate_password_hash, check_password_hash
 
 # 统一封装 Redis 访问，向上层屏蔽实现细节
 try:
@@ -17,9 +18,10 @@ class DataAccess:
 
           with open(config_path, 'r', encoding='utf-8') as f:
               config = json.load(f)
+          self.config = config
           mysql_conf = config.get('mysql', {})
 
-          # 每个进程独立连接池，pool_size=5：8 workers × 5 = 40 连接，远低于 max_connections=350
+          # 每个进程独立连接池，pool_size=5：8 workers × 5 = 40 连接，低于 max_connections=350
           self.pool_config = {
               'pool_name': f'exam_monitor_pool_{os.getpid()}',
               'pool_size': 5,
@@ -46,6 +48,157 @@ class DataAccess:
 
           # 懒加载 Redis 连接（仅在需要时获取）
           self._redis = None
+
+          self._ensure_auth_schema()
+
+    def _column_exists(self, cursor, table_name, column_name):
+        cursor.execute("""
+            SELECT COUNT(*) AS count
+            FROM INFORMATION_SCHEMA.COLUMNS
+            WHERE TABLE_SCHEMA = DATABASE()
+              AND TABLE_NAME = %s
+              AND COLUMN_NAME = %s
+        """, (table_name, column_name))
+        row = cursor.fetchone()
+        return bool(row and row.get('count'))
+
+    def _ensure_auth_schema(self):
+        """Create auth tables/columns needed for multi-user exam ownership."""
+        legacy_password = (
+            os.environ.get('EXAM_ADMIN_PASSWORD')
+            or self.config.get('admin_password')
+            or 'gdufskaoshi'
+        )
+
+        with self.with_connection() as conn:
+            with conn.cursor(dictionary=True) as cursor:
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS users (
+                      id int(11) NOT NULL AUTO_INCREMENT,
+                      username varchar(50) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL,
+                      password_hash varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL,
+                      display_name varchar(100) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci DEFAULT NULL,
+                      role varchar(20) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci DEFAULT 'teacher',
+                      status varchar(20) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci DEFAULT 'pending',
+                      created_at datetime DEFAULT CURRENT_TIMESTAMP,
+                      updated_at datetime DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                      PRIMARY KEY (id),
+                      UNIQUE KEY uk_users_username (username)
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci
+                """)
+
+                if not self._column_exists(cursor, 'users', 'role'):
+                    cursor.execute("ALTER TABLE users ADD COLUMN role varchar(20) DEFAULT 'teacher'")
+
+                if not self._column_exists(cursor, 'users', 'status'):
+                    cursor.execute("ALTER TABLE users ADD COLUMN status varchar(20) DEFAULT 'approved'")
+
+                if not self._column_exists(cursor, 'exams', 'owner_user_id'):
+                    cursor.execute("ALTER TABLE exams ADD COLUMN owner_user_id int(11) NULL")
+                    cursor.execute("CREATE INDEX idx_exams_owner_user_id ON exams (owner_user_id)")
+
+                if not self._column_exists(cursor, 'exams', 'monitor_password'):
+                    cursor.execute("ALTER TABLE exams ADD COLUMN monitor_password varchar(255) DEFAULT NULL")
+                    cursor.execute("CREATE INDEX idx_exams_monitor_password ON exams (monitor_password)")
+
+                cursor.execute("UPDATE users SET role='teacher' WHERE role IS NULL")
+                cursor.execute("UPDATE users SET status='approved' WHERE status IS NULL")
+                admin_password_hash = generate_password_hash(legacy_password)
+                cursor.execute("""
+                    INSERT IGNORE INTO users (username, password_hash, display_name, role, status)
+                    VALUES (%s, %s, %s, %s, %s)
+                """, ('admin', admin_password_hash, '管理员', 'admin', 'approved'))
+                cursor.execute(
+                    "UPDATE users SET password_hash=%s, role='admin', status='approved' WHERE username=%s",
+                    (admin_password_hash, 'admin')
+                )
+                cursor.execute("SELECT id FROM users WHERE username=%s", ('admin',))
+                admin = cursor.fetchone()
+                admin_id = admin['id']
+
+                cursor.execute(
+                    "UPDATE exams SET owner_user_id=%s WHERE owner_user_id IS NULL",
+                    (admin_id,)
+                )
+
+                try:
+                    r = self._get_redis()
+                    if r:
+                        cache_keys = r.keys("exam_config:*")
+                        if cache_keys:
+                            r.delete(*cache_keys)
+                except Exception as e:
+                    print(f"清理考试配置缓存失败: {e}")
+
+    def create_user(self, username, password, display_name=None, role='teacher', status='pending'):
+        username = (username or '').strip()
+        display_name = (display_name or username).strip()
+        if not username or not password:
+            raise ValueError("用户名和密码不能为空")
+
+        with self.with_connection() as conn:
+            with conn.cursor(dictionary=True) as cursor:
+                cursor.execute("""
+                    INSERT INTO users (username, password_hash, display_name, role, status)
+                    VALUES (%s, %s, %s, %s, %s)
+                """, (username, generate_password_hash(password), display_name, role, status))
+                return cursor.lastrowid
+
+    def get_user_by_username(self, username):
+        with self.with_connection() as conn:
+            with conn.cursor(dictionary=True) as cursor:
+                cursor.execute("SELECT * FROM users WHERE username=%s", ((username or '').strip(),))
+                return cursor.fetchone()
+
+    def get_user(self, user_id):
+        with self.with_connection() as conn:
+            with conn.cursor(dictionary=True) as cursor:
+                cursor.execute(
+                    "SELECT id, username, display_name, role, status, created_at FROM users WHERE id=%s",
+                    (user_id,)
+                )
+                return cursor.fetchone()
+
+    def get_all_users(self):
+        with self.with_connection() as conn:
+            with conn.cursor(dictionary=True) as cursor:
+                cursor.execute("""
+                    SELECT u.id, u.username, u.display_name, u.role, u.status, u.created_at,
+                           COUNT(e.id) AS exam_count
+                    FROM users u
+                    LEFT JOIN exams e ON e.owner_user_id = u.id
+                    GROUP BY u.id, u.username, u.display_name, u.role, u.status, u.created_at
+                    ORDER BY FIELD(u.status, 'pending', 'approved', 'disabled', 'rejected'), u.created_at DESC
+                """)
+                rows = cursor.fetchall()
+                for row in rows:
+                    if row.get('created_at') and hasattr(row['created_at'], 'strftime'):
+                        row['created_at'] = row['created_at'].strftime("%Y-%m-%d %H:%M:%S")
+                return rows
+
+    def update_user_status(self, user_id, status):
+        allowed = {'pending', 'approved', 'disabled', 'rejected'}
+        if status not in allowed:
+            raise ValueError("不支持的用户状态")
+        with self.with_connection() as conn:
+            with conn.cursor(dictionary=True) as cursor:
+                cursor.execute("UPDATE users SET status=%s WHERE id=%s", (status, user_id))
+                return cursor.rowcount
+
+    def update_user_role(self, user_id, role):
+        allowed = {'teacher', 'admin'}
+        if role not in allowed:
+            raise ValueError("不支持的用户角色")
+        with self.with_connection() as conn:
+            with conn.cursor(dictionary=True) as cursor:
+                cursor.execute("UPDATE users SET role=%s WHERE id=%s", (role, user_id))
+                return cursor.rowcount
+
+    def verify_user(self, username, password):
+        user = self.get_user_by_username(username)
+        if not user or not check_password_hash(user['password_hash'], password or ''):
+            return None
+        return user
 
     def _get_redis(self):
         """内部获取 Redis 客户端，不向上层暴露具体实现。"""
@@ -261,7 +414,7 @@ class DataAccess:
             # 从在线学生集合中移除
             online_set_key = f"exam:{exam_id}:online_students"
             if r.exists(online_set_key):
-                r.srem(online_set_key, student_id)
+                r.zrem(online_set_key, student_id)
                 print(f"从在线学生集合中移除: {student_id}")
                 
         except Exception as e:
@@ -301,7 +454,7 @@ class DataAccess:
                             exam_id = key.split(':')[1]
                             student_id = key.split(':')[-1]
                             online_set_key = f"exam:{exam_id}:online_students"
-                            r.srem(online_set_key, student_id)
+                            r.zrem(online_set_key, student_id)
                             
                             print(f"学生 {data.get('username', student_id)} (考试: {exam_id}) 标记为离线")
             
@@ -416,15 +569,41 @@ class DataAccess:
         except Exception as e:
             print(f"关闭连接池时出错: {e}")
 
-    def get_all_exams(self):
+    def get_all_exams(self, owner_user_id=None):
         with self.with_connection() as conn:
             with conn.cursor(dictionary=True) as cursor:
-                cursor.execute("SELECT * FROM exams")
-                records =  cursor.fetchall()
+                base_sql = """
+                    SELECT e.*, u.username AS owner_username, u.display_name AS owner_display_name
+                    FROM exams e
+                    LEFT JOIN users u ON u.id = e.owner_user_id
+                """
+                if owner_user_id is None:
+                    cursor.execute(base_sql + " ORDER BY e.start_time DESC, e.id DESC")
+                else:
+                    cursor.execute(
+                        base_sql + " WHERE e.owner_user_id=%s ORDER BY e.start_time DESC, e.id DESC",
+                        (owner_user_id,)
+                    )
+                records = cursor.fetchall()
                 for record in records:
                     record['start_time'] = record['start_time'].strftime("%Y-%m-%d %H:%M:%S")
                     record['end_time'] = record['end_time'].strftime("%Y-%m-%d %H:%M:%S")
+                    if record.get('created_at') and hasattr(record['created_at'], 'strftime'):
+                        record['created_at'] = record['created_at'].strftime("%Y-%m-%d %H:%M:%S")
                 return records
+
+    def get_students_for_owner(self, owner_user_id):
+        with self.with_connection() as conn:
+            with conn.cursor(dictionary=True) as cursor:
+                cursor.execute("""
+                    SELECT es.student_id, MAX(es.student_name) AS student_name, MAX(es.id) AS id
+                    FROM exam_students es
+                    INNER JOIN exams e ON e.id = es.exam_id
+                    WHERE e.owner_user_id = %s
+                    GROUP BY es.student_id
+                    ORDER BY MAX(es.id) DESC
+                """, (owner_user_id,))
+                return cursor.fetchall()
 
     def get_exam(self, exam_id):
         """获取考试信息，优先从 Redis 缓存读取，回退到 MySQL"""
@@ -461,8 +640,8 @@ class DataAccess:
         with self.with_connection() as conn:
             with conn.cursor(dictionary=True) as cursor:
                 sql = """
-                INSERT INTO exams (name, start_time, end_time, status, created_at, default_url, delay_min, disable_new_tabs, monitor_password)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                INSERT INTO exams (name, start_time, end_time, status, created_at, default_url, delay_min, disable_new_tabs, monitor_password, owner_user_id)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """
                 cursor.execute(sql, (
                     exam_data['name'],
@@ -473,7 +652,8 @@ class DataAccess:
                     exam_data.get('default_url'),
                     exam_data.get('delay_min', 0),
                     exam_data.get('disable_new_tabs', 0),
-                    exam_data.get('monitor_password')
+                    exam_data.get('monitor_password'),
+                    exam_data.get('owner_user_id')
                 ))
                 exam_id = cursor.lastrowid
 
@@ -574,6 +754,7 @@ class DataAccess:
                 return cursor.lastrowid
 
     def get_exam_violations(self, exam_id, page=1, per_page=12):
+
         with self.with_connection() as conn:
             with conn.cursor(dictionary=True) as cursor:
                 # 首先获取总数
@@ -589,6 +770,7 @@ class DataAccess:
 
                 # 为每个违规记录生成正确的截图URL
                 for violation in violations:
+
                     if violation.get('screenshot_path'):
                         # 从完整路径中提取文件名
                         import os
@@ -605,6 +787,7 @@ class DataAccess:
                         else:
                             violation['timestamp'] = str(violation['timestamp'])
 
+                #violations = violations[::6]  # 模拟每页数据较少的情况，测试前端分页逻辑
                 return {
                     'violations': violations,
                     'total': total_count,
@@ -654,7 +837,7 @@ class DataAccess:
 
                 # 删除Redis中的学生状态
                 try:
-                    redis = self.redis
+                    redis = self._get_redis()
                     if redis:
                         # 删除学生状态
                         student_key = f'exam:{exam_id}:student:{student_id}'
@@ -966,23 +1149,40 @@ class DataAccess:
     def refresh_exam_status(self):
         with self.with_connection() as conn:
             with conn.cursor(dictionary=True) as cursor:
-                # 更新考试状态为active（当前时间在考试时间范围内）
+                changed_exam_ids = set()
+
                 cursor.execute("""
-                    UPDATE exams 
-                    SET status = 'active' 
-                    WHERE NOW() BETWEEN start_time AND end_time 
+                    SELECT id FROM exams
+                    WHERE NOW() BETWEEN start_time AND end_time
                     AND status != 'active'
                 """)
-                
-                # 更新考试状态为completed（当前时间在考试结束时间之后）
+                changed_exam_ids.update(row['id'] for row in cursor.fetchall())
+
                 cursor.execute("""
-                    UPDATE exams 
-                    SET status = 'completed' 
-                    WHERE NOW() > end_time 
+                    UPDATE exams
+                    SET status = 'active'
+                    WHERE NOW() BETWEEN start_time AND end_time
+                    AND status != 'active'
+                """)
+
+                cursor.execute("""
+                    SELECT id FROM exams
+                    WHERE NOW() > end_time
                     AND status != 'completed'
                 """)
-                
-                return cursor.rowcount
+                changed_exam_ids.update(row['id'] for row in cursor.fetchall())
+
+                cursor.execute("""
+                    UPDATE exams
+                    SET status = 'completed'
+                    WHERE NOW() > end_time
+                    AND status != 'completed'
+                """)
+
+                for exam_id in changed_exam_ids:
+                    self._update_exam_cache(exam_id)
+
+                return len(changed_exam_ids)
 
     def update_exam_status(self, exam_id, status):
         """更新考试状态"""
@@ -994,7 +1194,6 @@ class DataAccess:
                 # 更新 Redis 缓存
                 if result > 0:
                     self._update_exam_cache(exam_id)
-                
                 return result
 
     def update_exam(self, exam_id, update_data):

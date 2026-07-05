@@ -1,6 +1,20 @@
 -- 考试监控系统数据库架构
 -- 从Redis迁移到MySQL的完整数据库结构
 
+-- 教师用户表
+CREATE TABLE IF NOT EXISTS `users` (
+  `id` int(11) NOT NULL AUTO_INCREMENT,
+  `username` varchar(50) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL,
+  `password_hash` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL,
+  `display_name` varchar(100) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci DEFAULT NULL,
+  `role` varchar(20) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci DEFAULT 'teacher',
+  `status` varchar(20) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci DEFAULT 'pending',
+  `created_at` datetime DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` datetime DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`) USING BTREE,
+  UNIQUE KEY `uk_users_username` (`username`) USING BTREE
+) ENGINE = InnoDB AUTO_INCREMENT = 1 CHARACTER SET = utf8mb4 COLLATE = utf8mb4_general_ci ROW_FORMAT = Dynamic;
+
 -- 学生基础信息表
 CREATE TABLE IF NOT EXISTS `students` (
   `id` int(11) NOT NULL AUTO_INCREMENT,
@@ -24,7 +38,11 @@ CREATE TABLE IF NOT EXISTS `exams` (
   `default_url` varchar(500) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci DEFAULT NULL,
   `delay_min` int(11) DEFAULT 0,
   `disable_new_tabs` tinyint(1) DEFAULT 0,
-  PRIMARY KEY (`id`) USING BTREE
+  `monitor_password` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci DEFAULT NULL,
+  `owner_user_id` int(11) NULL DEFAULT NULL,
+  PRIMARY KEY (`id`) USING BTREE,
+  INDEX `idx_exams_owner_user_id` (`owner_user_id`) USING BTREE,
+  INDEX `idx_exams_monitor_password` (`monitor_password`) USING BTREE
 ) ENGINE = InnoDB AUTO_INCREMENT = 1 CHARACTER SET = utf8mb4 COLLATE = utf8mb4_general_ci ROW_FORMAT = Dynamic;
 
 -- 考试学生表
@@ -113,3 +131,9 @@ CREATE INDEX IF NOT EXISTS `idx_login_history_timestamp` ON `student_exam_login_
 
 -- 如果需要添加last_active字段到现有的exam_students表
 -- ALTER TABLE `exam_students` ADD COLUMN `last_active` datetime NULL DEFAULT NULL;
+
+-- 旧库升级补充字段（服务启动时也会自动检查并创建）
+-- ALTER TABLE `exams` ADD COLUMN `monitor_password` varchar(255) DEFAULT NULL;
+-- ALTER TABLE `exams` ADD COLUMN `owner_user_id` int(11) NULL DEFAULT NULL;
+-- ALTER TABLE `users` ADD COLUMN `role` varchar(20) DEFAULT 'teacher';
+-- ALTER TABLE `users` ADD COLUMN `status` varchar(20) DEFAULT 'approved';

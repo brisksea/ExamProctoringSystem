@@ -142,7 +142,7 @@
                 <button class="btn btn-sm btn-outline-secondary refresh-btn">
                     <i class="bi bi-arrow-clockwise"></i> 刷新
                 </button>
-                <a href="/" class="btn btn-sm btn-outline-danger ms-2">退出</a>
+                <button id="logout-btn" class="btn btn-sm btn-outline-danger ms-2" type="button">退出</button>
             </div>
         </header>
 
@@ -580,6 +580,14 @@
         }
 
         $(document).ready(function() {
+            $(document).ajaxError(function(event, xhr) {
+                if (xhr.status === 401 || xhr.status === 403) {
+                    window.location.href = '/monitor_login';
+                }
+            });
+            $('#logout-btn').on('click', function() {
+                $.post('/api/auth/logout').always(function() { window.location.href = '/monitor_login'; });
+            });
             updateCurrentTime();
             setInterval(updateCurrentTime, 1000);
             fetchData();

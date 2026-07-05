@@ -30,7 +30,8 @@
 	"http://10.188.2.252:8080",
 	"https://pintia.cn/home",
 	"https://pintia.cn/problem-sets/2004597265375334400",
-	"https://pintia.cn/auth/login"
+	"https://pintia.cn/auth/login",
+	"http://10.188.2.252:8886"
     ],
     "allowed_url_patterns": [
 	"^https://.*vjudge.net/.*$",

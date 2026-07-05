@@ -17,7 +17,8 @@ import signal
 import atexit
 import threading
 from datetime import datetime, timedelta
-from flask import Flask, request, render_template, jsonify, send_from_directory, send_file, current_app
+from functools import wraps
+from flask import Flask, request, render_template, jsonify, send_from_directory, send_file, current_app, session, redirect, g
 from flask_cors import CORS
 from data_access import DataAccess
 from download_chromedriver import download_chromedriver as auto_download_chromedriver
@@ -82,6 +83,7 @@ def create_app():
     global DATA_DIR, BACKUP_DATA_DIR
 
     app = Flask(__name__)
+    config = {}
 
     # 初始化 DATA_DIR 和 BACKUP_DATA_DIR（从配置文件读取）
     try:
@@ -126,6 +128,16 @@ def create_app():
             print(f"已创建备份数据目录: {BACKUP_DATA_DIR}")
 
 
+    auth_secret = (
+        os.environ.get('EXAM_AUTH_SECRET')
+        or config.get('auth_secret')
+        or config.get('secret_key')
+        or 'exam-monitor-change-this-secret'
+    )
+    app.config['SECRET_KEY'] = auth_secret
+    app.config['SESSION_COOKIE_HTTPONLY'] = True
+    app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
+
     # 设置文件上传配置
     app.config['MAX_CONTENT_LENGTH'] = 500 * 1024 * 1024  # 500MB 最大文件大小
     app.config['UPLOAD_FOLDER'] = DATA_DIR
@@ -149,12 +161,190 @@ def create_app():
 
 app = create_app()
 
+
+def _to_int(value):
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _json_auth_error(message="请先登录", status_code=401):
+    return jsonify({"status": "error", "message": message}), status_code
+
+
+def get_current_session_user():
+    if session.get('auth_type') != 'teacher':
+        return None
+
+    if hasattr(g, 'current_session_user'):
+        return g.current_session_user
+
+    user_id = _to_int(session.get('user_id'))
+    if not user_id:
+        session.clear()
+        g.current_session_user = None
+        return None
+
+    try:
+        user = current_app.data_access.get_user(user_id)
+    except Exception:
+        g.current_session_user = None
+        return None
+
+    if not user or (user.get('status') or 'pending') != 'approved':
+        session.clear()
+        g.current_session_user = None
+        return None
+
+    session['role'] = user.get('role') or 'teacher'
+    g.current_session_user = user
+    return user
+
+
+def get_current_teacher_id():
+    user = get_current_session_user()
+    return _to_int(user.get('id')) if user else None
+
+
+def get_current_user_role():
+    user = get_current_session_user()
+    return (user.get('role') or 'teacher') if user else None
+
+
+def is_current_admin():
+    return get_current_user_role() == 'admin'
+
+
+def get_current_monitor_exam_id():
+    if session.get('auth_type') != 'monitor':
+        return None
+    return _to_int(session.get('monitor_exam_id'))
+
+
+def teacher_required(view_func):
+    @wraps(view_func)
+    def wrapper(*args, **kwargs):
+        if not get_current_teacher_id():
+            return _json_auth_error("请先使用教师账户登录")
+        return view_func(*args, **kwargs)
+    return wrapper
+
+
+def admin_required(view_func):
+    @wraps(view_func)
+    def wrapper(*args, **kwargs):
+        if not get_current_teacher_id():
+            return _json_auth_error("请先登录")
+        if not is_current_admin():
+            return _json_auth_error("需要管理员权限", 403)
+        return view_func(*args, **kwargs)
+    return wrapper
+
+
+def _exam_owner_id(exam):
+    if not exam:
+        return None
+    return _to_int(exam.get('owner_user_id'))
+
+
+def can_view_exam(exam):
+    if not exam:
+        return False
+
+    if is_current_admin():
+        return True
+
+    teacher_id = get_current_teacher_id()
+    if teacher_id and _exam_owner_id(exam) == teacher_id:
+        return True
+
+    monitor_exam_id = get_current_monitor_exam_id()
+    if monitor_exam_id and _to_int(exam.get('id')) == monitor_exam_id:
+        return True
+
+    return False
+
+
+def can_manage_exam(exam):
+    teacher_id = get_current_teacher_id()
+    return bool(teacher_id and exam and _exam_owner_id(exam) == teacher_id)
+
+
+def can_edit_exam(exam):
+    return bool(exam and (is_current_admin() or can_manage_exam(exam)))
+
+
+def can_delete_exam(exam):
+    return bool(exam and (is_current_admin() or can_manage_exam(exam)))
+
+
+def require_exam_view(exam_id):
+    exam = current_app.data_access.get_exam(exam_id)
+    if not exam:
+        return None, (jsonify({"status": "error", "message": "考试不存在"}), 404)
+    if not can_view_exam(exam):
+        return None, _json_auth_error("无权查看该考试", 403)
+    return exam, None
+
+
+def require_exam_manage(exam_id):
+    exam = current_app.data_access.get_exam(exam_id)
+    if not exam:
+        return None, (jsonify({"status": "error", "message": "考试不存在"}), 404)
+    if not can_manage_exam(exam):
+        return None, _json_auth_error("无权管理该考试", 403)
+    return exam, None
+
+
+def require_exam_edit(exam_id):
+    exam = current_app.data_access.get_exam(exam_id)
+    if not exam:
+        return None, (jsonify({"status": "error", "message": "考试不存在"}), 404)
+    if not can_edit_exam(exam):
+        return None, _json_auth_error("无权编辑该考试", 403)
+    return exam, None
+
+
+def require_exam_delete(exam_id):
+    exam = current_app.data_access.get_exam(exam_id)
+    if not exam:
+        return None, (jsonify({"status": "error", "message": "考试不存在"}), 404)
+    if not can_delete_exam(exam):
+        return None, _json_auth_error("无权删除该考试", 403)
+    return exam, None
+
+
+def serialize_user(user):
+    if not user:
+        return None
+    return {
+        'id': user.get('id'),
+        'username': user.get('username'),
+        'display_name': user.get('display_name') or user.get('username'),
+        'role': user.get('role') or 'teacher',
+        'status': user.get('status') or 'pending'
+    }
+
+
+def serialize_exam(exam, include_sensitive=False):
+    exam_data = dict(exam)
+    for key in ('start_time', 'end_time', 'created_at'):
+        if exam_data.get(key) and hasattr(exam_data[key], 'strftime'):
+            exam_data[key] = exam_data[key].strftime("%Y-%m-%d %H:%M:%S")
+    if not include_sensitive:
+        exam_data.pop('monitor_password', None)
+        exam_data.pop('owner_user_id', None)
+    return exam_data
+
 @app.route('/')
 def index():
     return render_template('index.html')
 
 @app.route('/student_management')
 def student_management():
+    if not get_current_teacher_id():
+        return redirect('/')
     return render_template('student_management.html')
 
 @app.route('/monitor_login')
@@ -165,12 +355,152 @@ def monitor_login():
 @app.route('/monitor/<int:exam_id>')
 def monitor_page(exam_id):
     """监控页面（仅查看权限）"""
-    # 验证考试是否存在
     exam = current_app.data_access.get_exam(exam_id)
     if not exam:
         return "考试不存在", 404
+    if not can_view_exam(exam):
+        return redirect('/monitor_login')
 
     return render_template('monitor.html', exam_id=exam_id)
+
+@app.route('/api/auth/me')
+def auth_me():
+    teacher_id = get_current_teacher_id()
+    if teacher_id:
+        user = current_app.data_access.get_user(teacher_id)
+        return jsonify({
+            "status": "success",
+            "authenticated": True,
+            "role": user.get('role') or get_current_user_role(),
+            "user": serialize_user(user)
+        })
+
+    monitor_exam_id = get_current_monitor_exam_id()
+    if monitor_exam_id:
+        return jsonify({
+            "status": "success",
+            "authenticated": True,
+            "role": "monitor",
+            "monitor_exam_id": monitor_exam_id
+        })
+
+    return jsonify({"status": "success", "authenticated": False})
+
+@app.route('/api/auth/login', methods=['POST'])
+def auth_login():
+    if not request.is_json:
+        return jsonify({"status": "error", "message": "Invalid request format"}), 400
+
+    data = request.json or {}
+    username = (data.get('username') or '').strip()
+    password = data.get('password') or ''
+    if not username or not password:
+        return jsonify({"status": "error", "message": "用户名和密码不能为空"}), 400
+
+    user = current_app.data_access.verify_user(username, password)
+    if not user:
+        return jsonify({"status": "error", "message": "用户名或密码错误"}), 401
+
+    user_status = user.get('status') or 'pending'
+    if user_status == 'pending':
+        return jsonify({"status": "error", "message": "账号待管理员审核，通过后才能登录"}), 403
+    if user_status in ('disabled', 'rejected'):
+        return jsonify({"status": "error", "message": "账号已被停用或拒绝"}), 403
+
+    session.clear()
+    session['auth_type'] = 'teacher'
+    session['user_id'] = user['id']
+    session['username'] = user['username']
+    session['role'] = user.get('role') or 'teacher'
+
+    return jsonify({
+        "status": "success",
+        "role": user.get('role') or 'teacher',
+        "user": serialize_user(user)
+    })
+
+@app.route('/api/auth/register', methods=['POST'])
+def auth_register():
+    allow_registration = current_app.data_access.config.get('allow_user_registration', True)
+    if not allow_registration:
+        return jsonify({"status": "error", "message": "当前系统未开放注册"}), 403
+    if not request.is_json:
+        return jsonify({"status": "error", "message": "Invalid request format"}), 400
+
+    data = request.json or {}
+    username = (data.get('username') or '').strip()
+    password = data.get('password') or ''
+    display_name = (data.get('display_name') or username).strip()
+
+    if len(username) < 3 or len(username) > 50:
+        return jsonify({"status": "error", "message": "用户名长度需为 3-50 个字符"}), 400
+    if len(password) < 6:
+        return jsonify({"status": "error", "message": "密码至少需要 6 个字符"}), 400
+
+    try:
+        user_id = current_app.data_access.create_user(username, password, display_name, role='teacher', status='pending')
+        user = current_app.data_access.get_user(user_id)
+        return jsonify({
+            "status": "success",
+            "message": "注册成功，等待管理员审核后才能登录",
+            "role": "teacher",
+            "user": serialize_user(user)
+        }), 201
+    except Exception as e:
+        if 'Duplicate entry' in str(e) or 'uk_users_username' in str(e):
+            return jsonify({"status": "error", "message": "用户名已存在"}), 409
+        return jsonify({"status": "error", "message": f"注册失败：{str(e)}"}), 500
+
+@app.route('/api/auth/logout', methods=['POST'])
+def auth_logout():
+    session.clear()
+    return jsonify({"status": "success"})
+
+@app.route('/api/admin/users')
+@admin_required
+def admin_users():
+    try:
+        return jsonify({
+            "status": "success",
+            "users": current_app.data_access.get_all_users()
+        })
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+@app.route('/api/admin/users/<int:user_id>', methods=['PUT'])
+@admin_required
+def admin_update_user(user_id):
+    if not request.is_json:
+        return jsonify({"status": "error", "message": "Invalid request format"}), 400
+
+    data = request.json or {}
+    status = data.get('status')
+    role = data.get('role')
+    current_user_id = get_current_teacher_id()
+
+    user = current_app.data_access.get_user(user_id)
+    if not user:
+        return jsonify({"status": "error", "message": "用户不存在"}), 404
+
+    if user_id == current_user_id and status in ('disabled', 'rejected'):
+        return jsonify({"status": "error", "message": "不能停用或拒绝当前管理员账号"}), 400
+
+    try:
+        changed = 0
+        if status:
+            changed += current_app.data_access.update_user_status(user_id, status)
+        if role:
+            changed += current_app.data_access.update_user_role(user_id, role)
+        updated = current_app.data_access.get_user(user_id)
+        return jsonify({
+            "status": "success",
+            "message": "用户已更新" if changed else "用户未变化",
+            "user": serialize_user(updated)
+        })
+    except ValueError as e:
+        return jsonify({"status": "error", "message": str(e)}), 400
+    except Exception as e:
+        return jsonify({"status": "error", "message": f"更新失败：{str(e)}"}), 500
 
 @app.route('/api/monitor/login', methods=['POST'])
 def monitor_login_api():
@@ -178,13 +508,13 @@ def monitor_login_api():
     if not request.is_json:
         return jsonify({"status": "error", "message": "Invalid request format"}), 400
 
-    data = request.json
+    data = request.json or {}
     password = data.get('monitor_password')
 
     if not password:
         return jsonify({"status": "error", "message": "Missing password"}), 400
 
-    # 查找具有该密码的考试
+    current_app.data_access.refresh_exam_status()
     conn = current_app.data_access.get_connection()
     try:
         with conn.cursor(dictionary=True) as cursor:
@@ -195,6 +525,9 @@ def monitor_login_api():
             exam = cursor.fetchone()
 
             if exam:
+                session.clear()
+                session['auth_type'] = 'monitor'
+                session['monitor_exam_id'] = exam['id']
                 return jsonify({
                     "status": "success",
                     "exam_id": exam['id'],
@@ -209,6 +542,7 @@ def monitor_login_api():
         conn.close()
 
 @app.route('/api/students/import', methods=['POST'])
+@teacher_required
 def import_students():
     """导入学生到指定考试，支持文本输入和文件上传两种方式"""
     exam_id = request.form.get('exam_id')
@@ -216,6 +550,10 @@ def import_students():
 
     if not exam_id:
         return jsonify({"status": "error", "message": "缺少考试ID"}), 400
+
+    exam, error_response = require_exam_manage(exam_id)
+    if error_response:
+        return error_response
 
     try:
         students = []
@@ -284,16 +622,18 @@ def import_students():
 
 
 @app.route('/api/students', methods=['GET'])
+@teacher_required
 def get_all_students():
-    """获取所有学生列表"""
+    """获取当前教师考试中的学生列表"""
     try:
-        students = current_app.data_access.get_all_students_from_table()
+        students = current_app.data_access.get_students_for_owner(get_current_teacher_id())
         return jsonify({"status": "success", "students": students})
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
 
 
 @app.route('/api/students/batch', methods=['POST'])
+@teacher_required
 def batch_create_students():
     """批量创建学生"""
     if not request.is_json:
@@ -442,34 +782,34 @@ def heartbeat():
     if not student_id or not exam_id:
         return jsonify({"status": "error", "message": "Missing student_id or exam_id"}), 400
 
-    # 检查学生是否存在
-    student_key = f'exam:{exam_id}:student:{student_id}'
-    if not current_app.data_access.exists(student_key):
-        return jsonify({"status": "error", "message": "Unknown student or exam"}), 404
+    try:
+        # 检查学生是否存在
+        student_key = f'exam:{exam_id}:student:{student_id}'
+        if not current_app.data_access.exists(student_key):
+            return jsonify({"status": "error", "message": "Unknown student or exam"}), 404
 
-    # 更新活跃（封装：DB + Redis + 上线历史）
-    current_app.data_access.mark_online_activity(student_id, exam_id, ip=get_real_ip())
+        # 更新活跃（封装：DB + Redis + 上线历史）
+        current_app.data_access.mark_online_activity(student_id, exam_id, ip=get_real_ip())
+    except Exception as e:
+        print(f"心跳处理异常: student={student_id}, exam={exam_id}, error={e}")
+        return jsonify({"status": "error", "message": "心跳处理失败"}), 500
 
     # 构建响应,检查是否有考试配置变更需要通知客户端
     response = {"status": "success"}
 
     # 检查Redis中是否有考试配置变更标记
-    r = current_app.data_access._get_redis()
-
-    # 检查结束时间是否变更
-    end_time_changed_key = f'exam:{exam_id}:end_time_changed'
-    new_end_time = r.get(end_time_changed_key)
-    if new_end_time:
-        # 解码并返回新的结束时间(已经是ISO格式)
-        if isinstance(new_end_time, bytes):
-            new_end_time = new_end_time.decode('utf-8')
-        response['end_time'] = new_end_time
-
-    # 未来可以扩展其他配置变更,例如:
-    # disable_new_tabs_key = f'exam:{exam_id}:disable_new_tabs_changed'
-    # new_disable_new_tabs = r.get(disable_new_tabs_key)
-    # if new_disable_new_tabs:
-    #     response['disable_new_tabs'] = new_disable_new_tabs.decode('utf-8')
+    try:
+        r = current_app.data_access._get_redis()
+        if r is not None:
+            # 检查结束时间是否变更
+            end_time_changed_key = f'exam:{exam_id}:end_time_changed'
+            new_end_time = r.get(end_time_changed_key)
+            if new_end_time:
+                if isinstance(new_end_time, bytes):
+                    new_end_time = new_end_time.decode('utf-8')
+                response['end_time'] = new_end_time
+    except Exception as e:
+        print(f"心跳检查配置变更失败: {e}")
 
     return jsonify(response)
 
@@ -573,6 +913,7 @@ def report_violation():
     screenshot_path = os.path.join(violations_dir, filename)
     screenshot.save(screenshot_path)
 
+
     # 记录异常
     violation_id = current_app.data_access.add_violation({
         'student_id': student_id,
@@ -595,10 +936,9 @@ def report_violation():
 def serve_screenshot(exam_id, filename):
     """提供截图文件（兼容旧格式，支持主备目录）"""
     try:
-        # 验证考试是否存在
-        exam = current_app.data_access.get_exam(exam_id)
-        if not exam:
-            return jsonify({"status": "error", "message": "考试不存在"}), 404
+        exam, error_response = require_exam_view(exam_id)
+        if error_response:
+            return error_response
 
         # 获取考试数据目录（支持主备目录）
         exam_dir = get_exam_data_dir(exam_id)
@@ -622,10 +962,9 @@ def serve_screenshot(exam_id, filename):
 def serve_student_screenshot(exam_id, student_id, filename):
     """提供学生专用目录的截图文件（支持主备目录）"""
     try:
-        # 验证考试是否存在
-        exam = current_app.data_access.get_exam(exam_id)
-        if not exam:
-            return jsonify({"status": "error", "message": "考试不存在"}), 404
+        exam, error_response = require_exam_view(exam_id)
+        if error_response:
+            return error_response
 
         # 获取考试数据目录（支持主备目录）
         exam_dir = get_exam_data_dir(exam_id)
@@ -650,10 +989,9 @@ def serve_student_screenshot(exam_id, student_id, filename):
 def serve_violation_screenshot(exam_id, filename):
     """提供违规截图文件（支持主备目录）"""
     try:
-        # 验证考试是否存在
-        exam = current_app.data_access.get_exam(exam_id)
-        if not exam:
-            return jsonify({"status": "error", "message": "考试不存在"}), 404
+        exam, error_response = require_exam_view(exam_id)
+        if error_response:
+            return error_response
 
         # 获取考试数据目录（支持主备目录）
         exam_dir = get_exam_data_dir(exam_id)
@@ -691,13 +1029,28 @@ def get_config():
 
 # 新增考试管理API
 @app.route('/api/exams', methods=['GET', 'POST'])
+@teacher_required
 def manage_exams():
     """考试管理"""
+    teacher_id = get_current_teacher_id()
+
     if request.method == 'GET':
         current_app.data_access.refresh_exam_status()
-        return jsonify(current_app.data_access.get_all_exams())
+        if is_current_admin():
+            requested_owner = (request.args.get('owner_user_id') or '').strip()
+            owner_filter = None
+            if requested_owner and requested_owner != 'all':
+                owner_filter = _to_int(requested_owner)
+                if owner_filter is None:
+                    return jsonify({"status": "error", "message": "教师筛选参数无效"}), 400
+        else:
+            owner_filter = teacher_id
+        exams = current_app.data_access.get_all_exams(owner_filter)
+        return jsonify([serialize_exam(exam, include_sensitive=False) for exam in exams])
 
     if request.method == 'POST':
+        if is_current_admin():
+            return _json_auth_error("管理员只能查看、编辑和删除考试，不能创建考试", 403)
         try:
             # 打印请求信息，用于调试
             print(f"请求内容类型: {request.content_type}")
@@ -728,7 +1081,8 @@ def manage_exams():
                 'start_time': start_time,
                 'end_time': end_time,
                 'created_at': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                'status': 'pending'  # pending, active, completed
+                'status': 'pending',  # pending, active, completed
+                'owner_user_id': teacher_id
             }
             if default_url:
                 exam_config['default_url'] = default_url
@@ -820,6 +1174,10 @@ def manage_exams():
 @app.route('/api/exams/<int:exam_id>/students')
 def get_exam_students_api(exam_id):
     """获取指定考试的学生信息，附带login_count、screenshot_count、recording_count字段"""
+    exam, error_response = require_exam_view(exam_id)
+    if error_response:
+        return error_response
+
     students = current_app.data_access.get_exam_students(exam_id)
 
     # 批量获取所有学生的登录次数，避免N+1查询问题
@@ -878,6 +1236,10 @@ def get_exam_students_api(exam_id):
 @app.route('/api/exams/<int:exam_id>/students/<student_id>', methods=['DELETE'])
 def delete_student_from_exam(exam_id, student_id):
     """删除指定考试的单个学生及其相关数据"""
+    exam, error_response = require_exam_manage(exam_id)
+    if error_response:
+        return error_response
+
     try:
         import shutil
 
@@ -927,33 +1289,39 @@ def delete_student_from_exam(exam_id, student_id):
 @app.route('/api/exams/<int:exam_id>/violations')
 def get_exam_violations_api(exam_id):
     """获取指定考试的违规记录，支持分页"""
+    exam, error_response = require_exam_view(exam_id)
+    if error_response:
+        return error_response
+
     # 获取分页参数
     page = request.args.get('page', 1, type=int)
     per_page = request.args.get('per_page', 12, type=int)
 
+    if exam_id  <= 0:
+        return jsonify({})
+    
     # 获取分页的违规记录和总数
     result = current_app.data_access.get_exam_violations(exam_id, page, per_page)
     return jsonify(result)
-
 
 
 @app.route('/api/exams/<int:exam_id>', methods=['GET', 'PUT', 'DELETE'])
 def manage_exam(exam_id):
     """管理单个考试：获取、更新、删除"""
     try:
-        # 检查考试是否存在
-        exam = current_app.data_access.get_exam(exam_id)
-        if not exam:
-            return jsonify({"status": "error", "message": "考试不存在"}), 404
-
         if request.method == 'GET':
-            # 获取考试详情
+            exam, error_response = require_exam_view(exam_id)
+            if error_response:
+                return error_response
             return jsonify({
                 "status": "success",
-                "exam": exam
+                "exam": serialize_exam(exam, include_sensitive=can_edit_exam(exam))
             })
 
-        elif request.method == 'PUT':
+        if request.method == 'PUT':
+            exam, error_response = require_exam_edit(exam_id)
+            if error_response:
+                return error_response
             # 更新考试信息
             try:
                 # 获取表单数据
@@ -1075,19 +1443,19 @@ def manage_exam(exam_id):
                 }), 500
 
         elif request.method == 'DELETE':
+            exam, error_response = require_exam_delete(exam_id)
+            if error_response:
+                return error_response
+
             # 删除考试
             # 如果考试正在进行中，不允许删除
             if exam and exam['status'] == 'active':
                 return jsonify({"status": "error", "message": "无法删除正在进行中的考试"}), 400
 
-            # 删除考试配置
-            current_app.data_access.delete_exam(exam_id)
-
-            # 删除考试相关的学生数据
+            # 先删除依赖数据，再删除考试配置
             current_app.data_access.delete_students_by_exam(exam_id)
-
-            # 删除考试相关的违规记录
             current_app.data_access.delete_violations_by_exam(exam_id)
+            current_app.data_access.delete_exam(exam_id)
 
             # 通知调度服务移除该考试的任务
             try:
@@ -1135,6 +1503,10 @@ def upload_screenshot():
 @app.route('/api/exams/<int:exam_id>/students/<student_id>/screenshots')
 def get_student_screenshots(exam_id, student_id):
     """获取指定考生的截图文件URL，支持分页（直接从文件系统读取，支持主备目录）"""
+    exam, error_response = require_exam_view(exam_id)
+    if error_response:
+        return error_response
+
     # 获取分页参数
     page = request.args.get('page', 1, type=int)
     per_page = request.args.get('per_page', 20, type=int)
@@ -1170,6 +1542,10 @@ def get_student_screenshots(exam_id, student_id):
 @app.route('/api/exams/<int:exam_id>/students/<student_id>/logins')
 def get_student_logins(exam_id, student_id):
     """获取学生登录历史记录"""
+    exam, error_response = require_exam_view(exam_id)
+    if error_response:
+        return error_response
+
     records = current_app.data_access.get_student_logins(exam_id, student_id)
     return jsonify(records)
 
@@ -1177,6 +1553,10 @@ def get_student_logins(exam_id, student_id):
 @app.route('/api/exams/<int:exam_id>/students/<student_id>/recordings')
 def get_student_recordings(exam_id, student_id):
     """获取指定考生的所有录屏文件（片段和合并后的，支持主备目录）"""
+    exam, error_response = require_exam_view(exam_id)
+    if error_response:
+        return error_response
+
     # 获取考试数据目录（支持主备目录）
     exam_dir = get_exam_data_dir(exam_id)
     exam_recordings_dir = os.path.join(exam_dir, "recordings")
@@ -1295,6 +1675,32 @@ def upload_screen_recording():
         
         if not student_id or not exam_id:
             return jsonify({"status": "error", "message": "Missing student information"}), 400
+
+        # 考试已结束则拒绝上传
+        exam = current_app.data_access.get_exam(exam_id)
+        if not exam:
+            return jsonify({"status": "error", "message": "考试不存在"}), 404
+
+        exam_ended = exam.get('status') == 'completed'
+        if not exam_ended:
+            end_time = exam.get('end_time')
+            end_time_dt = None
+
+            if isinstance(end_time, datetime):
+                end_time_dt = end_time
+            elif isinstance(end_time, str):
+                for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M:%S.%f"):
+                    try:
+                        end_time_dt = datetime.strptime(end_time, fmt)
+                        break
+                    except ValueError:
+                        continue
+
+            if end_time_dt and datetime.now() > end_time_dt:
+                exam_ended = True
+
+        if exam_ended:
+            return jsonify({"status": "error", "message": "考试已结束，拒绝上传录屏"}), 403
         
         # 检查是否有文件上传
         if 'video' not in request.files:
@@ -1389,10 +1795,9 @@ def upload_screen_recording():
 def serve_recording(exam_id, filename):
     """提供录屏文件下载 - 支持多种视频格式（支持主备目录）"""
     try:
-        # 验证考试是否存在
-        exam = current_app.data_access.get_exam(exam_id)
-        if not exam:
-            return jsonify({"status": "error", "message": "考试不存在"}), 404
+        exam, error_response = require_exam_view(exam_id)
+        if error_response:
+            return error_response
 
         # 根据文件扩展名设置正确的MIME类型
         if filename.lower().endswith('.webm'):
@@ -1431,10 +1836,9 @@ def serve_recording(exam_id, filename):
 def serve_student_recording(exam_id, student_id, filename):
     """提供学生专用目录中的录屏文件（支持主备目录）"""
     try:
-        # 验证考试是否存在
-        exam = current_app.data_access.get_exam(exam_id)
-        if not exam:
-            return jsonify({"status": "error", "message": "考试不存在"}), 404
+        exam, error_response = require_exam_view(exam_id)
+        if error_response:
+            return error_response
 
         # 根据文件扩展名设置正确的MIME类型
         if filename.lower().endswith('.webm'):

@@ -23,6 +23,10 @@ def check_and_clean_connections(idle_threshold_seconds=300, dry_run=True):
 
     try:
         with conn.cursor() as cursor:
+            # 获取当前连接自己的ID，避免误杀
+            cursor.execute("SELECT CONNECTION_ID()")
+            own_id = cursor.fetchone()[0]
+
             # 获取当前所有连接
             cursor.execute("""
                 SELECT Id, User, Host, db, Command, Time, State, Info
@@ -58,8 +62,8 @@ def check_and_clean_connections(idle_threshold_seconds=300, dry_run=True):
                 kill_ids = []
                 for conn_info in idle_connections:
                     conn_id, user, host, db, command, time, state, info = conn_info
-                    # 跳过系统进程和当前连接
-                    if user == 'system user' or user == DB_CONFIG['user']:
+                    # 只跳过系统进程和自己的连接
+                    if user == 'system user' or conn_id == own_id:
                         continue
 
                     print(f"{conn_id:<10} {user:<20} {host:<30} {str(db):<15} {time:<15} {state}")

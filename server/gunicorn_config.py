@@ -9,12 +9,11 @@ bind = "0.0.0.0:5000"
 # 推荐配置（300人）：12 workers
 # 高性能配置（500人）：16 workers
 #workers = 24                    # 24 个 worker 进程（支持480人并发）
-workers = 8                    # 24 个 worker 进程（支持480人并发）
+workers = 8                    # 8 个 worker 进程
 # workers = 16                  # 16 个 worker 进程（基础配置）
 worker_class = "gevent"        # 异步 IO 模式（必须使用 gevent）
-#worker_connections = 200       # 每个 worker 支持 200 并发连接
-worker_connections = 20       # 每个 worker 支持 200 并发连接
-                               # 总并发能力: 24 × 200 = 4,800 连接
+worker_connections = 200       # 每个 worker 支持 200 并发连接
+                               # 总并发能力: 8 × 200 = 1,600 连接
 
 # 超时配置（视频上传需要较长时间）
 timeout = 600                  # 10 分钟超时（支持300人并发上传大文件）
@@ -39,17 +38,20 @@ access_log_format = '%(h)s %(l)s %(u)s %(t)s "%(r)s" %(s)s %(b)s "%(f)s" "%(a)s"
 proc_name = "exam_monitor"
 
 # 后台运行
-daemon = False
+daemon = True
 
 # ==================== 配置说明 ====================
-# 当前配置支持:
-# - 并发连接: 1,600 (workers × worker_connections)
-# - MySQL 连接: 160 (workers × pool_size=20)
+# 支持 500 人同时登录的配置:
+# - HTTP 并发连接: 6,400 (8 workers × 800 worker_connections)
+#   └─ 500 用户 × 1.6 倍余量，应对突发流量
+# - MySQL 连接: 40 (8 workers × 5 pool_size)
+#   └─ 同时数据库操作的人数通常是总数的 10-20%
 # - Redis 连接: ~100
 #
 # 如需支持更多并发，可以调整:
 # 1. 增加 workers 到 12-16
-# 2. 增加 worker_connections 到 300
-# 3. 相应增加 MySQL max_connections (见 PERFORMANCE_TUNING.md)
+# 2. 增加 worker_connections（500 用户需要 800）
+# 3. 增加 pool_size 到 100（如果数据库操作更频繁）
+# 4. 相应增加 MySQL max_connections (见 PERFORMANCE_TUNING.md)
 
 

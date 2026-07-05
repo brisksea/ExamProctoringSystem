@@ -326,7 +326,10 @@
             </div>
             <div>
                 <span id="current-time"></span>
-                <button class="btn btn-primary ms-2" data-bs-toggle="modal" data-bs-target="#createExamModal">
+                <span id="current-user" class="badge bg-secondary ms-2" style="display:none;"></span>
+                <button id="admin-users-btn" class="btn btn-sm btn-outline-primary ms-2" style="display:none;" type="button">教师账号</button>
+                <button id="logout-btn" class="btn btn-sm btn-outline-danger ms-2" style="display:none;" type="button">退出</button>
+                <button id="create-exam-btn" class="btn btn-primary ms-2" data-bs-toggle="modal" data-bs-target="#createExamModal">
                     创建考试
                 </button>
                 <a class="btn btn-sm btn-outline-secondary ms-2 refresh-btn">
@@ -344,8 +347,14 @@
         <div class="row mb-4">
             <div class="col-12">
                 <div class="card">
-                    <div class="card-header">
+                    <div class="card-header d-flex justify-content-between align-items-center gap-2">
                         <h5 class="mb-0">考试列表</h5>
+                        <div id="admin-exam-filter" class="d-flex align-items-center gap-2" style="display:none;">
+                            <label for="admin-owner-filter" class="form-label mb-0 text-muted small">教师</label>
+                            <select id="admin-owner-filter" class="form-select form-select-sm" style="width: 180px;">
+                                <option value="">全部教师</option>
+                            </select>
+                        </div>
                     </div>
                     <div class="card-body">
                         <div id="exam-list" class="row g-3">
@@ -365,7 +374,7 @@
                         <h5 class="mb-0">学生列表</h5>
                         <div>
                             <span id="student-count" class="badge bg-primary">0</span>
-                            <button class="btn btn-sm btn-outline-primary ms-2" onclick="$('#importStudentsModal').modal('show')">
+                            <button id="import-students-btn" class="btn btn-sm btn-outline-primary ms-2" onclick="$('#importStudentsModal').modal('show')">
                                 导入学生
                             </button>
                         </div>
@@ -393,6 +402,42 @@
                             </div>
                         </div>
                     </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 教师账号管理模态框 -->
+    <div class="modal fade" id="adminUsersModal" tabindex="-1">
+        <div class="modal-dialog modal-lg">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">教师账号管理</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <div id="admin-users-alert" class="alert" style="display:none;"></div>
+                    <div class="table-responsive">
+                        <table class="table table-sm align-middle">
+                            <thead>
+                                <tr>
+                                    <th>用户名</th>
+                                    <th>显示名称</th>
+                                    <th>角色</th>
+                                    <th>状态</th>
+                                    <th>考试数</th>
+                                    <th>注册时间</th>
+                                    <th class="text-end">操作</th>
+                                </tr>
+                            </thead>
+                            <tbody id="admin-users-list">
+                                <tr><td colspan="7" class="text-center text-muted">加载中...</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">关闭</button>
                 </div>
             </div>
         </div>
@@ -668,6 +713,8 @@
 
     <script>
         let currentExamId = null;
+        let currentUserRole = null;
+        let selectedOwnerUserId = '';
         let autoRefreshTimer = null;
 
         // 添加违规截图缓存
@@ -738,11 +785,20 @@
         // 获取数据
         function fetchData(full = true) {
             // 获取考试列表
+            const examListUrl = currentUserRole === 'admin' && selectedOwnerUserId
+                ? `/api/exams?owner_user_id=${encodeURIComponent(selectedOwnerUserId)}`
+                : '/api/exams';
             $.ajax({
-                url: '/api/exams',
+                url: examListUrl,
                 method: 'GET',
                 success: function(exams) {
                     renderExams(exams);
+                },
+                error: function(xhr) {
+                    if (xhr.status === 401 || xhr.status === 403) {
+                        stopAutoRefresh();
+                        showPasswordModal();
+                    }
                 }
             });
 
@@ -762,13 +818,34 @@
             const examList = $('#exam-list');
             examList.empty();
 
+            const visibleExamIds = new Set(exams.map(exam => Number(exam.id)));
+            if (currentExamId && !visibleExamIds.has(Number(currentExamId))) {
+                currentExamId = null;
+                $('#exam-details').hide();
+            }
+
             exams.forEach(exam => {
+                const ownerText = exam.owner_display_name || exam.owner_username || '';
+                const ownerLine = currentUserRole === 'admin' && ownerText
+                    ? `<span class='text-muted'>创建教师: ${ownerText}</span><br>`
+                    : '';
+                const copyAction = currentUserRole === 'admin' ? '' : `
+                    <button class="btn btn-sm btn-outline-success" onclick="copyExam(event, ${exam.id}, '${exam.status}')" title="基于此考试创建新考试">
+                        <i class="bi bi-copy"></i> 复制
+                    </button>`;
+                const editAction = `
+                    <button class="btn btn-sm btn-outline-primary" onclick="editExam(event, ${exam.id})" title="编辑考试信息">
+                        <i class="bi bi-pencil"></i> 编辑
+                    </button>`;
+                const teacherActions = `${copyAction}${editAction}`;
+                const safeExamName = String(exam.name || '').replace(/'/g, "\\'");
                 const card = $(`
                     <div class="col-md-4 mb-3">
                         <div class="card exam-card exam-${exam.status}" data-exam-id="${exam.id}">
                             <div class="card-body" onclick="selectExam(${exam.id})">
                                 <h5 class="card-title">${exam.name} <small class="text-muted">(${exam.id})</small></h5>
                                 <p class="card-text">
+                                    ${ownerLine}
                                     开始: ${formatChineseDateTime(exam.start_time)}<br>
                                     结束: ${formatChineseDateTime(exam.end_time)}<br>
                                     状态: ${getStatusText(exam.status)}<br>
@@ -778,13 +855,8 @@
                                 </p>
                             </div>
                             <div class="card-footer d-flex justify-content-end gap-2">
-                                <button class="btn btn-sm btn-outline-success" onclick="copyExam(event, ${exam.id}, '${exam.status}')" title="基于此考试创建新考试">
-                                    <i class="bi bi-copy"></i> 复制
-                                </button>
-                                <button class="btn btn-sm btn-outline-primary" onclick="editExam(event, ${exam.id})" title="编辑考试信息">
-                                    <i class="bi bi-pencil"></i> 编辑
-                                </button>
-                                <button class="btn btn-sm btn-danger" onclick="confirmDeleteExam(event, ${exam.id}, '${exam.name}')" ${exam.status === 'active' ? 'disabled' : ''}>
+                                ${teacherActions}
+                                <button class="btn btn-sm btn-danger" onclick="confirmDeleteExam(event, ${exam.id}, '${safeExamName}')" ${exam.status === 'active' ? 'disabled' : ''}>
                                     <i class="bi bi-trash"></i> 删除
                                 </button>
                             </div>
@@ -1890,73 +1962,314 @@
             // loadStudentLoginHistory(examId, studentId);
         }
 
-        // 口令验证弹窗（统一入口：管理员或监考）
+        // 登录弹窗（教师账户或监控密码）
         function showPasswordModal() {
+            $('#passwordModal').remove();
             const modalHtml = `
             <div class="modal fade" id="passwordModal" tabindex="-1" aria-modal="true" role="dialog" style="z-index: 2000;">
                 <div class="modal-dialog modal-dialog-centered">
                     <div class="modal-content">
-                        <form id="password-form" autocomplete="off">
-                            <div class="modal-header">
-                                <h5 class="modal-title">🔐 系统登录</h5>
-                            </div>
-                            <div class="modal-body">
-                                <p class="text-muted small mb-3">请输入管理口令或考试监控密码</p>
-                                <input type="password" id="page-password" class="form-control" placeholder="管理口令 / 监控密码" autocomplete="off">
-                                <div id="password-error" class="text-danger mt-2" style="display:none;">口令错误，请重试</div>
-                                <div id="password-checking" class="text-primary mt-2" style="display:none;">
-                                    <span class="spinner-border spinner-border-sm me-2"></span>验证中...
+                        <div class="modal-header">
+                            <h5 class="modal-title">系统登录</h5>
+                        </div>
+                        <div class="modal-body">
+                            <ul class="nav nav-tabs mb-3" role="tablist">
+                                <li class="nav-item" role="presentation">
+                                    <button class="nav-link active" data-bs-toggle="tab" data-bs-target="#teacher-login-pane" type="button" role="tab">教师登录</button>
+                                </li>
+                                <li class="nav-item" role="presentation">
+                                    <button class="nav-link" data-bs-toggle="tab" data-bs-target="#monitor-login-pane" type="button" role="tab">监控查看</button>
+                                </li>
+                            </ul>
+                            <div class="tab-content">
+                                <div class="tab-pane fade show active" id="teacher-login-pane" role="tabpanel">
+                                    <form id="teacher-login-form" autocomplete="off">
+                                        <div class="mb-3">
+                                            <label class="form-label">用户名</label>
+                                            <input type="text" id="login-username" class="form-control" autocomplete="username" required>
+                                        </div>
+                                        <div class="mb-3">
+                                            <label class="form-label">密码</label>
+                                            <input type="password" id="login-password" class="form-control" autocomplete="current-password" required>
+                                        </div>
+                                        <div id="login-error" class="text-danger mb-2" style="display:none;"></div>
+                                        <button type="submit" class="btn btn-primary w-100" id="login-submit-btn">登录</button>
+                                        <button type="button" class="btn btn-link w-100 mt-2" id="show-register-btn">注册新用户</button>
+                                    </form>
+                                    <form id="register-form" autocomplete="off" style="display:none;">
+                                        <div class="mb-3">
+                                            <label class="form-label">用户名</label>
+                                            <input type="text" id="register-username" class="form-control" autocomplete="username" required>
+                                        </div>
+                                        <div class="mb-3">
+                                            <label class="form-label">显示名称</label>
+                                            <input type="text" id="register-display-name" class="form-control">
+                                        </div>
+                                        <div class="mb-3">
+                                            <label class="form-label">密码</label>
+                                            <input type="password" id="register-password" class="form-control" autocomplete="new-password" required>
+                                        </div>
+                                        <div id="register-error" class="text-danger mb-2" style="display:none;"></div>
+                                        <button type="submit" class="btn btn-primary w-100" id="register-submit-btn">提交注册</button>
+                                        <button type="button" class="btn btn-link w-100 mt-2" id="show-login-btn">返回登录</button>
+                                    </form>
+                                </div>
+                                <div class="tab-pane fade" id="monitor-login-pane" role="tabpanel">
+                                    <form id="monitor-login-form" autocomplete="off">
+                                        <div class="mb-3">
+                                            <label class="form-label">监控密码</label>
+                                            <input type="password" id="monitor-password" class="form-control" autocomplete="off" required>
+                                        </div>
+                                        <div id="monitor-login-error" class="text-danger mb-2" style="display:none;"></div>
+                                        <button type="submit" class="btn btn-primary w-100" id="monitor-login-submit-btn">进入监控页面</button>
+                                    </form>
                                 </div>
                             </div>
-                            <div class="modal-footer">
-                                <button type="submit" class="btn btn-primary" id="password-confirm-btn">登录</button>
-                            </div>
-                        </form>
+                        </div>
                     </div>
                 </div>
             </div>`;
             $(document.body).append(modalHtml);
             const modal = new bootstrap.Modal(document.getElementById('passwordModal'), {backdrop: 'static', keyboard: false});
             modal.show();
-            setTimeout(()=>{$('#page-password').focus();}, 300);
+            setTimeout(()=>{$('#login-username').focus();}, 300);
 
-            $('#password-form').on('submit', function(e) {
+            function finishTeacherLogin(user) {
+                applyUserRole(user);
+                modal.hide();
+                setTimeout(()=>{$('#passwordModal').remove();}, 500);
+                startDashboard();
+            }
+
+            $('#show-register-btn').on('click', function() {
+                $('#teacher-login-form').hide();
+                $('#register-form').show();
+                $('#register-username').focus();
+            });
+            $('#show-login-btn').on('click', function() {
+                $('#register-form').hide();
+                $('#teacher-login-form').show();
+                $('#login-username').focus();
+            });
+
+            $('#teacher-login-form').on('submit', function(e) {
                 e.preventDefault();
-                const val = $('#page-password').val();
+                $('#login-error').hide();
+                $('#login-submit-btn').prop('disabled', true);
+                $.ajax({
+                    url: '/api/auth/login',
+                    method: 'POST',
+                    contentType: 'application/json',
+                    data: JSON.stringify({
+                        username: $('#login-username').val().trim(),
+                        password: $('#login-password').val()
+                    }),
+                    success: function(response) {
+                        finishTeacherLogin(response.user);
+                    },
+                    error: function(xhr) {
+                        $('#login-error').text(xhr.responseJSON?.message || '登录失败').show();
+                        $('#login-submit-btn').prop('disabled', false);
+                    }
+                });
+            });
 
-                // 隐藏错误提示
-                $('#password-error').hide();
+            $('#register-form').on('submit', function(e) {
+                e.preventDefault();
+                $('#register-error').hide();
+                $('#register-submit-btn').prop('disabled', true);
+                $.ajax({
+                    url: '/api/auth/register',
+                    method: 'POST',
+                    contentType: 'application/json',
+                    data: JSON.stringify({
+                        username: $('#register-username').val().trim(),
+                        display_name: $('#register-display-name').val().trim(),
+                        password: $('#register-password').val()
+                    }),
+                    success: function(response) {
+                        $('#register-error').removeClass('text-danger').addClass('text-success')
+                            .text(response.message || '注册成功，等待管理员审核后才能登录').show();
+                        $('#register-form')[0].reset();
+                        $('#register-submit-btn').prop('disabled', false);
+                    },
+                    error: function(xhr) {
+                        $('#register-error').removeClass('text-success').addClass('text-danger')
+                            .text(xhr.responseJSON?.message || '注册失败').show();
+                        $('#register-submit-btn').prop('disabled', false);
+                    }
+                });
+            });
 
-                // 1. 先检查是否是管理口令
-                if(val === 'gdufskaoshi') {
-                    modal.hide();
-                    setTimeout(()=>{$('#passwordModal').remove();}, 500);
-                    return;
-                }
-
-                // 2. 尝试作为监控密码验证
-                $('#password-checking').show();
-                $('#password-confirm-btn').prop('disabled', true);
-
+            $('#monitor-login-form').on('submit', function(e) {
+                e.preventDefault();
+                $('#monitor-login-error').hide();
+                $('#monitor-login-submit-btn').prop('disabled', true);
                 $.ajax({
                     url: '/api/monitor/login',
                     method: 'POST',
                     contentType: 'application/json',
-                    data: JSON.stringify({ monitor_password: val }),
+                    data: JSON.stringify({ monitor_password: $('#monitor-password').val() }),
                     success: function(response) {
-                        if (response.status === 'success') {
-                            // 监控密码验证成功，跳转到监控页面
-                            window.location.href = `/monitor/${response.exam_id}`;
-                        }
+                        window.location.href = `/monitor/${response.exam_id}`;
                     },
-                    error: function() {
-                        // 监控密码也不对，显示错误
-                        $('#password-checking').hide();
-                        $('#password-error').text('口令或密码错误，请重试').show();
-                        $('#page-password').val('').focus();
-                        $('#password-confirm-btn').prop('disabled', false);
+                    error: function(xhr) {
+                        $('#monitor-login-error').text(xhr.responseJSON?.message || '监控密码错误').show();
+                        $('#monitor-password').val('').focus();
+                        $('#monitor-login-submit-btn').prop('disabled', false);
                     }
                 });
+            });
+        }
+
+        function applyUserRole(user) {
+            currentUserRole = user?.role || 'teacher';
+            $('#current-user').text(user?.display_name || user?.username || '教师').show();
+            $('#logout-btn').show();
+            if (currentUserRole === 'admin') {
+                $('#admin-users-btn').show();
+                $('#admin-exam-filter').show();
+                $('#create-exam-btn').hide();
+                $('#import-students-btn').hide();
+                loadAdminTeacherFilter();
+            } else {
+                selectedOwnerUserId = '';
+                $('#admin-users-btn').hide();
+                $('#admin-exam-filter').hide();
+                $('#create-exam-btn').show();
+                $('#import-students-btn').show();
+            }
+        }
+
+        function statusText(status) {
+            const map = {pending: '待审核', approved: '已通过', disabled: '已停用', rejected: '已拒绝'};
+            return map[status] || status || '';
+        }
+
+        function roleText(role) {
+            const map = {admin: '管理员', teacher: '教师'};
+            return map[role] || role || '';
+        }
+
+        function updateAdminTeacherFilter(users) {
+            const select = $('#admin-owner-filter');
+            if (!select.length) return;
+
+            const teachers = (users || [])
+                .filter(user => user.role === 'teacher')
+                .sort((a, b) => String(a.display_name || a.username || '').localeCompare(String(b.display_name || b.username || ''), 'zh-Hans-CN'));
+            const currentValue = selectedOwnerUserId || select.val() || '';
+            const options = ['<option value="">全部教师</option>'].concat(teachers.map(user => {
+                const label = `${user.display_name || user.username || ''}（${user.username || ''}，${statusText(user.status)}）`;
+                return `<option value="${user.id}">${label}</option>`;
+            }));
+            select.html(options.join(''));
+
+            if (currentValue && teachers.some(user => String(user.id) === String(currentValue))) {
+                selectedOwnerUserId = String(currentValue);
+            } else {
+                selectedOwnerUserId = '';
+            }
+            select.val(selectedOwnerUserId);
+        }
+
+        function loadAdminTeacherFilter() {
+            if (currentUserRole !== 'admin') return;
+            $.ajax({
+                url: '/api/admin/users',
+                method: 'GET',
+                success: function(response) {
+                    updateAdminTeacherFilter(response.users || []);
+                }
+            });
+        }
+
+        function loadAdminUsers() {
+            $('#admin-users-list').html('<tr><td colspan="7" class="text-center text-muted">加载中...</td></tr>');
+            $.ajax({
+                url: '/api/admin/users',
+                method: 'GET',
+                success: function(response) {
+                    const users = response.users || [];
+                    updateAdminTeacherFilter(users);
+                    if (!users.length) {
+                        $('#admin-users-list').html('<tr><td colspan="7" class="text-center text-muted">暂无用户</td></tr>');
+                        return;
+                    }
+                    const rows = users.map(user => {
+                        const actions = [];
+                        if (user.status !== 'approved') {
+                            actions.push(`<button class="btn btn-sm btn-outline-success" onclick="updateAdminUser(${user.id}, 'approved')">通过</button>`);
+                        }
+                        if (user.status !== 'disabled' && user.role !== 'admin') {
+                            actions.push(`<button class="btn btn-sm btn-outline-warning" onclick="updateAdminUser(${user.id}, 'disabled')">停用</button>`);
+                        }
+                        if (user.status === 'pending') {
+                            actions.push(`<button class="btn btn-sm btn-outline-danger" onclick="updateAdminUser(${user.id}, 'rejected')">拒绝</button>`);
+                        }
+                        return `<tr>
+                            <td>${user.username || ''}</td>
+                            <td>${user.display_name || ''}</td>
+                            <td>${roleText(user.role)}</td>
+                            <td>${statusText(user.status)}</td>
+                            <td>${user.exam_count || 0}</td>
+                            <td>${user.created_at || ''}</td>
+                            <td class="text-end"><div class="btn-group btn-group-sm">${actions.join('')}</div></td>
+                        </tr>`;
+                    }).join('');
+                    $('#admin-users-list').html(rows);
+                },
+                error: function(xhr) {
+                    $('#admin-users-list').html(`<tr><td colspan="7" class="text-danger text-center">${xhr.responseJSON?.message || '加载失败'}</td></tr>`);
+                }
+            });
+        }
+
+        function updateAdminUser(userId, status) {
+            $.ajax({
+                url: `/api/admin/users/${userId}`,
+                method: 'PUT',
+                contentType: 'application/json',
+                data: JSON.stringify({status}),
+                success: function(response) {
+                    $('#admin-users-alert').removeClass('alert-danger').addClass('alert-success')
+                        .text(response.message || '已更新').show();
+                    loadAdminUsers();
+                    loadAdminTeacherFilter();
+                },
+                error: function(xhr) {
+                    $('#admin-users-alert').removeClass('alert-success').addClass('alert-danger')
+                        .text(xhr.responseJSON?.message || '更新失败').show();
+                }
+            });
+        }
+
+        function startDashboard() {
+            updateCurrentTime();
+            if (!window.currentTimeTimer) {
+                window.currentTimeTimer = setInterval(updateCurrentTime, 1000);
+            }
+            fetchData(true);
+            startAutoRefresh();
+        }
+
+        function checkAuthAndStart() {
+            $.ajax({
+                url: '/api/auth/me',
+                method: 'GET',
+                success: function(response) {
+                    if (response.authenticated && (response.role === 'teacher' || response.role === 'admin')) {
+                        applyUserRole(response.user);
+                        startDashboard();
+                    } else if (response.authenticated && response.role === 'monitor') {
+                        window.location.href = `/monitor/${response.monitor_exam_id}`;
+                    } else {
+                        showPasswordModal();
+                    }
+                },
+                error: function() {
+                    showPasswordModal();
+                }
             });
         }
 
@@ -1971,11 +2284,21 @@
 
         // 页面加载完成后执行
         $(document).ready(function() {
-            showPasswordModal();
-            updateCurrentTime();
-            setInterval(updateCurrentTime, 1000);  // 每秒更新当前时间
-            fetchData(true);
-            startAutoRefresh();
+            checkAuthAndStart();
+            $('#logout-btn').on('click', function() {
+                $.post('/api/auth/logout').always(function() { window.location.href = '/'; });
+            });
+            $('#admin-users-btn').on('click', function() {
+                $('#admin-users-alert').hide();
+                $('#adminUsersModal').modal('show');
+                loadAdminUsers();
+            });
+            $('#admin-owner-filter').on('change', function() {
+                selectedOwnerUserId = $(this).val() || '';
+                currentExamId = null;
+                $('#exam-details').hide();
+                fetchData(true);
+            });
             $('#stop-auto-refresh').on('change', function() {
                 if (this.checked) {
                     stopAutoRefresh();
