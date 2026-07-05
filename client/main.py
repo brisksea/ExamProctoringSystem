@@ -556,7 +556,7 @@ class ExamClient:
                         new_end_time = response_data.get("end_time")
                         if new_end_time and new_end_time != self.exam_end_time:
                             # 在主线程更新UI和定时器
-                            self.root.after(0, lambda: self.update_exam_time(new_end_time))
+                            self.root.after(0, lambda value=new_end_time: self.update_exam_time(value))
                     
                     # 每隔一段时间记录连接质量统计
                     if hasattr(self.api_client, 'get_connection_stats'):
@@ -1466,19 +1466,34 @@ class ExamClient:
 
     def update_exam_time(self, new_end_time):
         """更新考试结束时间"""
-        if not new_end_time or new_end_time == self.exam_end_time:
+        if not new_end_time:
             return
 
-        self.log(f"监考老师为您延长了考试时间。新的结束时间：{new_end_time}")
-        self.write_log(f"考试时间更新：{self.exam_end_time} -> {new_end_time}")
-        self.exam_end_time = new_end_time
+        try:
+            normalized_end_time = datetime.fromisoformat(str(new_end_time)).strftime("%Y-%m-%dT%H:%M:%S")
+        except Exception:
+            normalized_end_time = str(new_end_time)
+
+        current_end_time = self.exam_end_time
+        try:
+            if current_end_time:
+                current_end_time = datetime.fromisoformat(str(current_end_time)).strftime("%Y-%m-%dT%H:%M:%S")
+        except Exception:
+            current_end_time = self.exam_end_time
+
+        if normalized_end_time == current_end_time:
+            return
+
+        self.log(f"监考老师调整了考试结束时间。新的结束时间：{normalized_end_time}")
+        self.write_log(f"考试时间更新：{self.exam_end_time} -> {normalized_end_time}")
+        self.exam_end_time = normalized_end_time
 
         # 更新UI
         if hasattr(self, 'exam_time_label'):
             try:
                 exam_time_str = ""
                 if self.exam_start_time:
-                    dt_start = datetime.fromisoformat(self.exam_start_time)
+                    dt_start = datetime.fromisoformat(str(self.exam_start_time))
                     exam_time_str += f"开始: {dt_start.strftime('%Y-%m-%d %H:%M:%S')}  "
 
                 dt_end = datetime.fromisoformat(self.exam_end_time)

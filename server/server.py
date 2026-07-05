@@ -174,6 +174,32 @@ def _json_auth_error(message="请先登录", status_code=401):
     return jsonify({"status": "error", "message": message}), status_code
 
 
+def parse_exam_datetime(value):
+    if isinstance(value, datetime):
+        return value
+    if not value:
+        return None
+    if isinstance(value, str):
+        normalized = value.strip().replace("Z", "+00:00")
+        try:
+            return datetime.fromisoformat(normalized)
+        except ValueError:
+            pass
+        for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M"):
+            try:
+                return datetime.strptime(value.strip(), fmt)
+            except ValueError:
+                continue
+    return None
+
+
+def format_exam_datetime(value):
+    parsed = parse_exam_datetime(value)
+    if parsed:
+        return parsed.strftime("%Y-%m-%dT%H:%M:%S")
+    return str(value) if value is not None else None
+
+
 def get_current_session_user():
     if session.get('auth_type') != 'teacher':
         return None
@@ -793,24 +819,31 @@ def heartbeat():
         print(f"心跳处理异常: student={student_id}, exam={exam_id}, error={e}")
         return jsonify({"status": "error", "message": "心跳处理失败"}), 500
 
-    # 构建响应,检查是否有考试配置变更需要通知客户端
+    # 构建响应，心跳包携带当前考试结束时间，客户端可据此同步倒计时。
     response = {"status": "success"}
 
-    # 检查Redis中是否有考试配置变更标记
+    try:
+        exam = current_app.data_access.get_exam(exam_id)
+        if exam and exam.get("end_time"):
+            response["end_time"] = format_exam_datetime(exam.get("end_time"))
+    except Exception as e:
+        print(f"心跳读取考试结束时间失败: {e}")
+
+    # Redis 标记用于兼容即时变更通知；即使标记过期，上面的当前考试配置仍会随心跳返回。
     try:
         r = current_app.data_access._get_redis()
         if r is not None:
-            # 检查结束时间是否变更
-            end_time_changed_key = f'exam:{exam_id}:end_time_changed'
+            end_time_changed_key = f"exam:{exam_id}:end_time_changed"
             new_end_time = r.get(end_time_changed_key)
             if new_end_time:
                 if isinstance(new_end_time, bytes):
-                    new_end_time = new_end_time.decode('utf-8')
-                response['end_time'] = new_end_time
+                    new_end_time = new_end_time.decode("utf-8")
+                response["end_time"] = format_exam_datetime(new_end_time)
     except Exception as e:
         print(f"心跳检查配置变更失败: {e}")
 
     return jsonify(response)
+
 
 @app.route('/api/logout', methods=['POST'])
 def student_logout():
@@ -1342,11 +1375,19 @@ def manage_exam(exam_id):
                     print(error_msg)
                     return jsonify({"status": "error", "message": error_msg}), 400
 
+                parsed_start_time = parse_exam_datetime(start_time)
+                parsed_end_time = parse_exam_datetime(end_time)
+                if not parsed_start_time or not parsed_end_time:
+                    return jsonify({"status": "error", "message": "考试开始或结束时间格式不正确"}), 400
+
+                start_time_db = parsed_start_time.strftime("%Y-%m-%d %H:%M:%S")
+                end_time_db = parsed_end_time.strftime("%Y-%m-%d %H:%M:%S")
+
                 # 构建更新数据
                 update_data = {
                     'name': name,
-                    'start_time': start_time,
-                    'end_time': end_time,
+                    'start_time': start_time_db,
+                    'end_time': end_time_db,
                     'delay_min': int(delay_min) if delay_min else 0
                 }
 
@@ -1374,7 +1415,7 @@ def manage_exam(exam_id):
                                 AND %s > start_time
                                 AND id != %s
                                 LIMIT 1
-                            """, (monitor_password, start_time, end_time, exam_id))
+                            """, (monitor_password, start_time_db, end_time_db, exam_id))
                             conflict_exam = cursor.fetchone()
 
                             if conflict_exam:
@@ -1398,36 +1439,40 @@ def manage_exam(exam_id):
                         r = current_app.data_access._get_redis()
                         r.publish('exam:schedule_changes', json.dumps({
                             'action': 'update', 'exam_id': exam_id,
-                            'start_time': start_time, 'end_time': end_time
+                            'start_time': start_time_db, 'end_time': end_time_db
                         }))
                     except Exception as e:
                         print(f"[调度通知] 发布失败: {e}")
 
-                    # 检查end_time是否变更(考试正在进行中时)
-                    if exam['status'] == 'active' and str(exam['end_time']) != str(end_time):
-                        # 设置Redis标记,通知所有在线学生
-                        # 标记值直接存储ISO格式的新end_time,30分钟后自动过期
-                        end_time_changed_key = f'exam:{exam_id}:end_time_changed'
-                        r = current_app.data_access._get_redis()
+                    end_time_changed = False
+                    old_end_time = format_exam_datetime(exam.get("end_time"))
+                    new_end_time = format_exam_datetime(end_time_db)
 
-                        # 将end_time转换为ISO格式
+                    # 考试进行中修改结束时间时，心跳会持续返回当前结束时间；Redis 标记用于更快提示在线客户端。
+                    if exam["status"] == "active" and old_end_time != new_end_time:
+                        end_time_changed = True
                         try:
-                            from datetime import datetime
-                            if isinstance(end_time, str):
-                                dt = datetime.strptime(end_time, "%Y-%m-%d %H:%M:%S")
-                            else:
-                                dt = end_time
-                            iso_time = dt.isoformat()
-                        except:
-                            iso_time = str(end_time)
+                            r = current_app.data_access._get_redis()
+                            if r is not None:
+                                end_time_changed_key = f"exam:{exam_id}:end_time_changed"
+                                r.setex(end_time_changed_key, 1800, new_end_time)
+                            print(
+                                f"[考试更新] 考试 {exam_id} 结束时间变更: "
+                                f"{old_end_time} -> {new_end_time}, 将通过心跳同步"
+                            )
+                        except Exception as e:
+                            print(f"[考试更新] 设置结束时间心跳同步标记失败: {e}")
 
-                        r.setex(end_time_changed_key, 1800, iso_time)
-                        print(f"[考试更新] 考试 {exam_id} 结束时间变更: {exam['end_time']} -> {end_time}, 已设置Redis标记(30分钟过期)")
+                    message = "考试信息更新成功"
+                    if end_time_changed:
+                        message = "考试信息更新成功，新的结束时间将通过心跳同步给在线客户端"
 
                     return jsonify({
                         "status": "success",
-                        "message": "考试信息更新成功"
+                        "message": message,
+                        "end_time": new_end_time
                     })
+
                 else:
                     return jsonify({
                         "status": "error",
