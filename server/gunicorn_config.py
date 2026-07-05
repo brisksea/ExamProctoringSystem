@@ -42,16 +42,16 @@ daemon = True
 
 # ==================== 配置说明 ====================
 # 支持 500 人同时登录的配置:
-# - HTTP 并发连接: 6,400 (8 workers × 800 worker_connections)
+# - HTTP 并发连接: 1,600 (8 workers × 200 worker_connections)
 #   └─ 500 用户 × 1.6 倍余量，应对突发流量
-# - MySQL 连接: 40 (8 workers × 5 pool_size)
+# - MySQL 连接: 160 (8 workers × 20 pool_size)
 #   └─ 同时数据库操作的人数通常是总数的 10-20%
 # - Redis 连接: ~100
 #
 # 如需支持更多并发，可以调整:
 # 1. 增加 workers 到 12-16
-# 2. 增加 worker_connections（500 用户需要 800）
-# 3. 增加 pool_size 到 100（如果数据库操作更频繁）
+# 2. 视上传并发增加 worker_connections
+# 3. 通过 MYSQL_POOL_SIZE 或 config.json 调整 pool_size（需同步 MySQL max_connections）
 # 4. 相应增加 MySQL max_connections (见 PERFORMANCE_TUNING.md)
 
 

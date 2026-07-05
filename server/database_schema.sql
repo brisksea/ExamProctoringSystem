@@ -55,11 +55,12 @@ CREATE TABLE IF NOT EXISTS `exam_students` (
   `last_active` datetime NULL DEFAULT NULL,
   PRIMARY KEY (`id`) USING BTREE,
   INDEX `exam_id`(`exam_id`) USING BTREE,
+  UNIQUE KEY `uk_exam_students_exam_student` (`exam_id`, `student_id`) USING BTREE,
   CONSTRAINT `exam_students_ibfk_1` FOREIGN KEY (`exam_id`) REFERENCES `exams` (`id`) ON DELETE RESTRICT ON UPDATE RESTRICT
 ) ENGINE = InnoDB AUTO_INCREMENT = 1 CHARACTER SET = utf8mb4 COLLATE = utf8mb4_general_ci ROW_FORMAT = Dynamic;
 
 -- 学生考试登录历史表
-CREATE TABLE IF NOT EXISTS `student_exam_login_history` (
+CREATE TABLE IF NOT EXISTS `student_login_history` (
   `id` int(11) NOT NULL AUTO_INCREMENT,
   `student_exam_id` int(11) NOT NULL,
   `action` varchar(20) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL,
@@ -67,7 +68,7 @@ CREATE TABLE IF NOT EXISTS `student_exam_login_history` (
   `ip` varchar(45) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci DEFAULT NULL,
   PRIMARY KEY (`id`) USING BTREE,
   INDEX `student_exam_id`(`student_exam_id`) USING BTREE,
-  CONSTRAINT `student_exam_login_history_ibfk_1` FOREIGN KEY (`student_exam_id`) REFERENCES `exam_students` (`id`) ON DELETE CASCADE ON UPDATE RESTRICT
+  CONSTRAINT `student_login_history_ibfk_1` FOREIGN KEY (`student_exam_id`) REFERENCES `exam_students` (`id`) ON DELETE CASCADE ON UPDATE RESTRICT
 ) ENGINE = InnoDB AUTO_INCREMENT = 1 CHARACTER SET = utf8mb4 COLLATE = utf8mb4_general_ci ROW_FORMAT = Dynamic;
 
 -- 违规记录表
@@ -127,7 +128,7 @@ CREATE INDEX IF NOT EXISTS `idx_violations_timestamp` ON `violations` (`timestam
 CREATE INDEX IF NOT EXISTS `idx_screenshots_timestamp` ON `screenshots` (`timestamp`);
 CREATE INDEX IF NOT EXISTS `idx_screen_recordings_timestamp` ON `screen_recordings` (`timestamp`);
 CREATE INDEX IF NOT EXISTS `idx_screen_frames_timestamp` ON `screen_frames` (`timestamp`);
-CREATE INDEX IF NOT EXISTS `idx_login_history_timestamp` ON `student_exam_login_history` (`timestamp`);
+CREATE INDEX IF NOT EXISTS `idx_login_history_timestamp` ON `student_login_history` (`timestamp`);
 
 -- 如果需要添加last_active字段到现有的exam_students表
 -- ALTER TABLE `exam_students` ADD COLUMN `last_active` datetime NULL DEFAULT NULL;

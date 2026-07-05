@@ -3,6 +3,7 @@ from datetime import datetime
 import os
 import json
 import threading
+import queue
 from werkzeug.security import generate_password_hash, check_password_hash
 
 # 统一封装 Redis 访问，向上层屏蔽实现细节
@@ -21,11 +22,16 @@ class DataAccess:
           self.config = config
           mysql_conf = config.get('mysql', {})
 
-          # 每个进程独立连接池，pool_size=5：8 workers × 5 = 40 连接，低于 max_connections=350
+          pool_size = int(os.environ.get('MYSQL_POOL_SIZE') or mysql_conf.get('pool_size', 20))
+          pool_reset_session = mysql_conf.get('pool_reset_session', True)
+          if isinstance(pool_reset_session, str):
+              pool_reset_session = pool_reset_session.lower() in ('1', 'true', 'yes', 'on')
+
+          # 每个进程独立连接池，pool_size=20：8 workers × 20 = 160 连接，适配500人登录峰值
           self.pool_config = {
               'pool_name': f'exam_monitor_pool_{os.getpid()}',
-              'pool_size': 5,
-              'pool_reset_session': False,
+              'pool_size': pool_size,
+              'pool_reset_session': pool_reset_session,
               'host': mysql_conf.get('host', 'localhost'),
               'port': mysql_conf.get('port', 3306),
               'user': mysql_conf.get('user', 'debian-sys-maint'),
@@ -62,13 +68,129 @@ class DataAccess:
         row = cursor.fetchone()
         return bool(row and row.get('count'))
 
+    def _table_exists(self, cursor, table_name):
+        cursor.execute("""
+            SELECT COUNT(*) AS count
+            FROM INFORMATION_SCHEMA.TABLES
+            WHERE TABLE_SCHEMA = DATABASE()
+              AND TABLE_NAME = %s
+        """, (table_name,))
+        row = cursor.fetchone()
+        return bool(row and row.get("count"))
+
+    def _index_exists(self, cursor, table_name, index_name):
+        cursor.execute("""
+            SELECT COUNT(*) AS count
+            FROM INFORMATION_SCHEMA.STATISTICS
+            WHERE TABLE_SCHEMA = DATABASE()
+              AND TABLE_NAME = %s
+              AND INDEX_NAME = %s
+        """, (table_name, index_name))
+        row = cursor.fetchone()
+        return bool(row and row.get("count"))
+
+    def _ensure_login_history_schema(self, cursor):
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS student_login_history (
+              id int(11) NOT NULL AUTO_INCREMENT,
+              student_exam_id int(11) NOT NULL,
+              action varchar(20) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL,
+              timestamp datetime NOT NULL,
+              ip varchar(45) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci DEFAULT NULL,
+              PRIMARY KEY (id),
+              INDEX student_exam_id (student_exam_id),
+              CONSTRAINT student_login_history_ibfk_1
+                FOREIGN KEY (student_exam_id) REFERENCES exam_students (id)
+                ON DELETE CASCADE ON UPDATE RESTRICT
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci
+        """)
+
+        if not self._index_exists(cursor, "student_login_history", "idx_login_history_timestamp"):
+            cursor.execute("CREATE INDEX idx_login_history_timestamp ON student_login_history (timestamp)")
+
+        if self._table_exists(cursor, "student_exam_login_history"):
+            try:
+                cursor.execute("""
+                    INSERT IGNORE INTO student_login_history (id, student_exam_id, action, timestamp, ip)
+                    SELECT id, student_exam_id, action, timestamp, ip
+                    FROM student_exam_login_history
+                """)
+            except Exception as e:
+                print(f"迁移旧登录历史表失败: {e}")
+
+    def _deduplicate_exam_students(self, cursor):
+        cursor.execute("""
+            SELECT exam_id, student_id, MIN(id) AS keep_id, COUNT(*) AS duplicate_count
+            FROM exam_students
+            WHERE exam_id IS NOT NULL AND student_id IS NOT NULL
+            GROUP BY exam_id, student_id
+            HAVING COUNT(*) > 1
+        """)
+        duplicate_groups = cursor.fetchall()
+
+        for group in duplicate_groups:
+            cursor.execute("""
+                SELECT id, student_name, status, last_active
+                FROM exam_students
+                WHERE exam_id=%s AND student_id=%s
+                ORDER BY id DESC
+            """, (group["exam_id"], group["student_id"]))
+            rows = cursor.fetchall()
+            if not rows:
+                continue
+
+            keep_id = group["keep_id"]
+            latest = rows[0]
+            duplicate_ids = [row["id"] for row in rows if row["id"] != keep_id]
+
+            cursor.execute("""
+                UPDATE exam_students
+                SET student_name=%s, status=%s, last_active=%s
+                WHERE id=%s
+            """, (latest.get("student_name"), latest.get("status"), latest.get("last_active"), keep_id))
+
+            if not duplicate_ids:
+                continue
+
+            placeholders = ",".join(["%s"] * len(duplicate_ids))
+            params = [keep_id] + duplicate_ids
+
+            if self._table_exists(cursor, "student_login_history"):
+                cursor.execute(
+                    f"UPDATE student_login_history SET student_exam_id=%s WHERE student_exam_id IN ({placeholders})",
+                    params
+                )
+            if self._table_exists(cursor, "student_exam_login_history"):
+                cursor.execute(
+                    f"UPDATE student_exam_login_history SET student_exam_id=%s WHERE student_exam_id IN ({placeholders})",
+                    params
+                )
+
+            cursor.execute(
+                f"DELETE FROM exam_students WHERE id IN ({placeholders})",
+                duplicate_ids
+            )
+            print(
+                f"已合并重复学生记录: exam_id={group['exam_id']}, "
+                f"student_id={group['student_id']}, count={group['duplicate_count']}"
+            )
+
+    def _ensure_exam_student_unique_index(self, cursor):
+        if self._index_exists(cursor, "exam_students", "uk_exam_students_exam_student"):
+            return
+        self._deduplicate_exam_students(cursor)
+        cursor.execute("""
+            CREATE UNIQUE INDEX uk_exam_students_exam_student
+            ON exam_students (exam_id, student_id)
+        """)
+
     def _ensure_auth_schema(self):
         """Create auth tables/columns needed for multi-user exam ownership."""
-        legacy_password = (
+        configured_admin_password = (
             os.environ.get('EXAM_ADMIN_PASSWORD')
             or self.config.get('admin_password')
-            or 'gdufskaoshi'
         )
+        initial_admin_password = configured_admin_password or 'gdufskaoshi'
 
         with self.with_connection() as conn:
             with conn.cursor(dictionary=True) as cursor:
@@ -95,23 +217,34 @@ class DataAccess:
 
                 if not self._column_exists(cursor, 'exams', 'owner_user_id'):
                     cursor.execute("ALTER TABLE exams ADD COLUMN owner_user_id int(11) NULL")
+                if not self._index_exists(cursor, 'exams', 'idx_exams_owner_user_id'):
                     cursor.execute("CREATE INDEX idx_exams_owner_user_id ON exams (owner_user_id)")
 
                 if not self._column_exists(cursor, 'exams', 'monitor_password'):
                     cursor.execute("ALTER TABLE exams ADD COLUMN monitor_password varchar(255) DEFAULT NULL")
+                if not self._index_exists(cursor, 'exams', 'idx_exams_monitor_password'):
                     cursor.execute("CREATE INDEX idx_exams_monitor_password ON exams (monitor_password)")
+
+                self._ensure_login_history_schema(cursor)
+                self._ensure_exam_student_unique_index(cursor)
 
                 cursor.execute("UPDATE users SET role='teacher' WHERE role IS NULL")
                 cursor.execute("UPDATE users SET status='approved' WHERE status IS NULL")
-                admin_password_hash = generate_password_hash(legacy_password)
+                admin_password_hash = generate_password_hash(initial_admin_password)
                 cursor.execute("""
                     INSERT IGNORE INTO users (username, password_hash, display_name, role, status)
                     VALUES (%s, %s, %s, %s, %s)
                 """, ('admin', admin_password_hash, '管理员', 'admin', 'approved'))
-                cursor.execute(
-                    "UPDATE users SET password_hash=%s, role='admin', status='approved' WHERE username=%s",
-                    (admin_password_hash, 'admin')
-                )
+                if configured_admin_password:
+                    cursor.execute(
+                        "UPDATE users SET password_hash=%s, role='admin', status='approved' WHERE username=%s",
+                        (admin_password_hash, 'admin')
+                    )
+                else:
+                    cursor.execute(
+                        "UPDATE users SET role='admin', status='approved' WHERE username=%s",
+                        ('admin',)
+                    )
                 cursor.execute("SELECT id FROM users WHERE username=%s", ('admin',))
                 admin = cursor.fetchone()
                 admin_id = admin['id']
@@ -500,15 +633,24 @@ class DataAccess:
         for attempt in range(max_retries):
             try:
                 conn = self.pool.get_connection()
+                try:
+                    conn.ping(reconnect=True, attempts=1, delay=0)
+                except Exception:
+                    try:
+                        conn.close()
+                    except Exception:
+                        pass
+                    raise
+
                 if conn.is_connected():
                     # 记录连接获取时间
                     acquire_time = time.time() - acquire_start
                     if acquire_time > 0.1:  # 超过100ms就记录
                         print(f"[PERF] 进程 {os.getpid()}: 连接获取耗时 {acquire_time:.3f}s")
                     return conn
-                else:
-                    conn.close()
-                    raise Exception("连接无效")
+
+                conn.close()
+                raise Exception("连接无效")
             except Exception as e:
                 if attempt < max_retries - 1:
                     print(f"进程 {os.getpid()}: 获取数据库连接失败 (尝试 {attempt + 1}/{max_retries}): {e}")
@@ -555,17 +697,26 @@ class DataAccess:
         return connection_context()
 
     def close_pool(self):
-        """关闭连接池"""
+        """关闭当前进程连接池中的空闲底层连接。"""
         try:
-            if hasattr(self, 'pool'):
-                # 关闭连接池中的所有连接
-                while True:
-                    try:
-                        conn = self.pool.get_connection()
-                        conn.close()
-                    except:
-                        break
-                print("数据库连接池已关闭")
+            pool_queue = getattr(getattr(self, "pool", None), "_cnx_queue", None)
+            if not pool_queue:
+                return
+
+            closed = 0
+            while True:
+                try:
+                    conn = pool_queue.get_nowait()
+                except queue.Empty:
+                    break
+
+                try:
+                    conn.close()
+                    closed += 1
+                except Exception as e:
+                    print(f"关闭池内连接时出错: {e}")
+
+            print(f"数据库连接池已关闭空闲连接: {closed}")
         except Exception as e:
             print(f"关闭连接池时出错: {e}")
 
@@ -691,10 +842,16 @@ class DataAccess:
                 return cursor.fetchall()
 
     def add_student_to_exam(self, student_id, student_name, exam_id, status='pending'):
-        with self.with_connection() as conn: 
+        with self.with_connection() as conn:
             with conn.cursor(dictionary=True) as cursor:
-                sql = "INSERT INTO exam_students (student_id, student_name, exam_id, status) VALUES (%s, %s, %s, %s)"
-                cursor.execute(sql, (student_id, student_name, exam_id, status))
+                cursor.execute("""
+                    INSERT INTO exam_students (student_id, student_name, exam_id, status)
+                    VALUES (%s, %s, %s, %s)
+                    ON DUPLICATE KEY UPDATE
+                      id=LAST_INSERT_ID(id),
+                      student_name=VALUES(student_name),
+                      status=VALUES(status)
+                """, (student_id, student_name, exam_id, status))
                 return cursor.lastrowid
 
 
@@ -796,19 +953,30 @@ class DataAccess:
                 }
 
     def exists(self, key):
-        # 只支持 exam:{exam_id} 这种格式
-        if key.startswith('exam:'):
+        parts = key.split(":")
+        if len(parts) >= 4 and parts[0] == "exam" and parts[2] == "student":
             try:
-                exam_id = int(key.split(':')[1])
+                exam_id = int(parts[1])
             except Exception:
                 return False
-            conn = self.get_connection()
-            try:
+            student_id = parts[3]
+            with self.with_connection() as conn:
                 with conn.cursor(dictionary=True) as cursor:
-                    cursor.execute("SELECT 1 FROM exams WHERE id=%s", (exam_id,))
+                    cursor.execute(
+                        "SELECT 1 FROM exam_students WHERE exam_id=%s AND student_id=%s LIMIT 1",
+                        (exam_id, student_id)
+                    )
                     return cursor.fetchone() is not None
-            finally:
-                conn.close()
+
+        if len(parts) >= 2 and parts[0] == "exam":
+            try:
+                exam_id = int(parts[1])
+            except Exception:
+                return False
+            with self.with_connection() as conn:
+                with conn.cursor(dictionary=True) as cursor:
+                    cursor.execute("SELECT 1 FROM exams WHERE id=%s LIMIT 1", (exam_id,))
+                    return cursor.fetchone() is not None
         return False
 
     def delete_students_by_exam(self, exam_id):
@@ -880,34 +1048,45 @@ class DataAccess:
                 return cursor.lastrowid
 
     def handle_student_login(self, username, exam_id, student_id, ip):
-        """处理学生登录逻辑"""
+        """处理学生登录逻辑，保证同一考试同一学生记录幂等。"""
         try:
-            # 验证必要参数
             if not username or not exam_id:
                 return {
                     "status": "error",
                     "message": "缺少必要的登录参数"
                 }
 
-            # 如果没有提供student_id，使用username作为student_id
             if not student_id:
                 student_id = username
 
-            # 查找或创建学生考试记录
-            student_exam = self.get_student_exam(student_id, exam_id)
-            if not student_exam:
-                # 创建新的学生考试记录
-                exam_student_id = self.add_student_to_exam(student_id, username, exam_id, 'online')
-            else:
-                # 更新现有记录状态
-                exam_student_id = student_exam['id']
-                self.update_student_exam_status(exam_student_id, 'online')
-
-            # 添加登录历史记录
             timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            self.add_login_history(exam_student_id, 'login', timestamp, ip)
+            with self.with_connection() as conn:
+                with conn.cursor(dictionary=True) as cursor:
+                    cursor.execute("""
+                        INSERT INTO exam_students (student_id, student_name, exam_id, status)
+                        VALUES (%s, %s, %s, %s)
+                        ON DUPLICATE KEY UPDATE
+                          id=LAST_INSERT_ID(id),
+                          student_name=VALUES(student_name),
+                          status=VALUES(status)
+                    """, (student_id, username, exam_id, "online"))
+                    exam_student_id = cursor.lastrowid
 
-            # 注意：最后活跃时间保存在Redis中，不需要更新数据库的last_active字段
+                    if not exam_student_id:
+                        cursor.execute(
+                            "SELECT id FROM exam_students WHERE student_id=%s AND exam_id=%s LIMIT 1",
+                            (student_id, exam_id)
+                        )
+                        row = cursor.fetchone()
+                        exam_student_id = row["id"] if row else None
+
+                    if not exam_student_id:
+                        raise RuntimeError("无法获取学生考试记录ID")
+
+                    cursor.execute(
+                        "INSERT INTO student_login_history (student_exam_id, action, timestamp, ip) VALUES (%s, %s, %s, %s)",
+                        (exam_student_id, "login", timestamp, ip)
+                    )
 
             return {
                 "status": "success",
@@ -1228,18 +1407,4 @@ class DataAccess:
 
 
 
-# 全局清理函数
-def cleanup_database_connections():
-    """清理数据库连接和 Redis 数据"""
-    try:
-        # 创建临时的 DataAccess 实例进行清理
-        da = DataAccess()
-        da.cleanup_all_redis_data()
-        da.close_pool()
-        print("数据库连接和 Redis 数据已清理")
-    except Exception as e:
-        print(f"清理数据库连接和 Redis 数据时出错: {e}")
-
-# 注册退出时的清理函数
-import atexit
-atexit.register(cleanup_database_connections)
+# 不在模块导入时注册全局清理。Gunicorn worker recycle 时清理 Redis 会误伤在线状态。

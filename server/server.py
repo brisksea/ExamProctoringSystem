@@ -156,6 +156,7 @@ def create_app():
     })
 
     app.data_access = DataAccess()
+    atexit.register(app.data_access.close_pool)
     # MergeManager 已迁移到 Celery 任务，不再需要在这里创建
     return app
 
@@ -729,13 +730,11 @@ def login():
         if result.get('status') == 'success':
             # 为学生创建专用的截图目录（考试进行中，使用主目录）
             student_screenshot_dir = os.path.join(DATA_DIR, str(exam_id), "screenshots", str(student_id))
-            if not os.path.exists(student_screenshot_dir):
-                os.makedirs(student_screenshot_dir)
+            os.makedirs(student_screenshot_dir, exist_ok=True)
 
             # 为学生创建专用的录屏目录（考试进行中，使用主目录）
             student_recording_dir = os.path.join(DATA_DIR, str(exam_id), "recordings", str(student_id))
-            if not os.path.exists(student_recording_dir):
-                os.makedirs(student_recording_dir)
+            os.makedirs(student_recording_dir, exist_ok=True)
 
             # 记录 Redis 实时状态（向上层屏蔽 Redis 细节）
             try:
@@ -1489,8 +1488,7 @@ def upload_screenshot():
 
     # 创建学生专用的截图目录
     student_screenshot_dir = os.path.join(DATA_DIR, str(exam_id), "screenshots", str(student_id))
-    if not os.path.exists(student_screenshot_dir):
-        os.makedirs(student_screenshot_dir)
+    os.makedirs(student_screenshot_dir, exist_ok=True)
 
     screenshot_path = os.path.join(student_screenshot_dir, filename)
     screenshot.save(screenshot_path)
@@ -1614,40 +1612,49 @@ def get_student_recordings(exam_id, student_id):
     return jsonify({"recordings": recordings})
 
 # ChromeDriver下载API
-@app.route('/driver/<path:filename>')
+@app.route("/driver/<path:filename>")
 def download_chromedriver(filename):
-    """下载chromedriver可执行文件"""
-    # 假设所有chromedriver文件都放在 DATA_DIR/chromedrivers 目录下
-    chromedriver_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'chromedrivers')
-    file_path = os.path.join(chromedriver_dir, filename)
+    """下载chromedriver可执行文件。"""
+    import re
+
+    if os.path.basename(filename) != filename or "/" in filename or "\\" in filename:
+        return jsonify({"status": "error", "message": "非法文件名"}), 400
+
+    if not re.fullmatch(r"(chromedriver|msedgedriver)_\d+(\.exe)?", filename):
+        return jsonify({"status": "error", "message": f"不支持的驱动文件名: {filename}"}), 400
+
+    chromedriver_dir = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "chromedrivers"))
+    os.makedirs(chromedriver_dir, exist_ok=True)
+    file_path = os.path.abspath(os.path.join(chromedriver_dir, filename))
+
+    if os.path.commonpath([chromedriver_dir, file_path]) != chromedriver_dir:
+        return jsonify({"status": "error", "message": "非法文件路径"}), 400
+
     print(f"Checking for ChromeDriver: {file_path}")
-    
+
     if not os.path.exists(file_path):
         print(f"File {filename} not found, attempting to auto-download...")
-        # 尝试从文件名解析版本号，格式如: chromedriver_143.exe 或 chromedriver_143
-        # 只需要提取数字部分
-        import re
-        match = re.search(r'chromedriver_(\d+)', filename)
-        if match:
-            major_version = match.group(1)
-            platform = "win64" if filename.endswith(".exe") else "linux64"
-            print(f"Detected version {major_version} and platform {platform} from filename.")
-            
-            try:
-                # 调用自动下载函数
-                success = auto_download_chromedriver(major_version, target_dir=chromedriver_dir, platform_override=platform)
-                if not success or not os.path.exists(file_path):
-                    return jsonify({"status": "error", "message": f"自动下载失败: {filename}"}), 404
-                print(f"Auto-download successful: {file_path}")
-            except Exception as e:
-                print(f"Error during auto-download: {e}")
-                return jsonify({"status": "error", "message": f"下载过程中出错: {str(e)}"}), 500
-        else:
-            return jsonify({"status": "error", "message": f"未找到{filename}且无法解析版本号"}), 404
-            
-    # 设置Content-Disposition，建议保存为chromedriver.exe
+        match = re.fullmatch(r"(chromedriver|msedgedriver)_(\d+)(\.exe)?", filename)
+        driver_type = match.group(1)
+        major_version = match.group(2)
+        platform = "win64" if filename.endswith(".exe") else "linux64"
+        print(f"Detected {driver_type} version {major_version} and platform {platform} from filename.")
+
+        if driver_type != "chromedriver":
+            return jsonify({"status": "error", "message": f"未找到{filename}，暂不支持自动下载Edge驱动"}), 404
+
+        try:
+            success = auto_download_chromedriver(major_version, target_dir=chromedriver_dir, platform_override=platform)
+            if not success or not os.path.exists(file_path):
+                return jsonify({"status": "error", "message": f"自动下载失败: {filename}"}), 404
+            print(f"Auto-download successful: {file_path}")
+        except Exception as e:
+            print(f"Error during auto-download: {e}")
+            return jsonify({"status": "error", "message": f"下载过程中出错: {str(e)}"}), 500
+
     print(f"Sending file: {file_path}")
-    return send_file(file_path, as_attachment=True, download_name='chromedriver.exe')
+    download_name = "msedgedriver.exe" if filename.startswith("msedgedriver_") else "chromedriver.exe"
+    return send_file(file_path, as_attachment=True, download_name=download_name)
 
 @app.route('/api/server_time')
 def get_server_time():
@@ -1744,8 +1751,7 @@ def upload_screen_recording():
 
         # 创建学生专用的录屏目录
         student_recording_dir = os.path.join(DATA_DIR, str(exam_id), "recordings", str(student_id))
-        if not os.path.exists(student_recording_dir):
-            os.makedirs(student_recording_dir)
+        os.makedirs(student_recording_dir, exist_ok=True)
 
         video_path = os.path.join(student_recording_dir, filename)
 
